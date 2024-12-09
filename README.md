@@ -108,11 +108,11 @@ We greatly appreciate the authors of these repositories for their contributions 
 
 ```bibtex
 @inproceedings{
-karchkhadze2024improving,
-title={Improving Source Extraction with Diffusion and Consistency Models},
-author={Tornike Karchkhadze and Mohammad Rasool Izadi and Shuo Zhang},
-booktitle={Audio Imagination: NeurIPS 2024 Workshop AI-Driven Speech, Music, and Sound Generation},
-year={2024},
-url={https://openreview.net/forum?id=nskR7tWE6z}
+  karchkhadze2024improving,
+  title={Improving Source Extraction with Diffusion and Consistency Models},
+  author={Tornike Karchkhadze and Mohammad Rasool Izadi and Shuo Zhang},
+  booktitle={Audio Imagination: NeurIPS 2024 Workshop AI-Driven Speech, Music, and Sound Generation},
+  year={2024},
+  url={https://openreview.net/forum?id=nskR7tWE6z}
 }
 ```
