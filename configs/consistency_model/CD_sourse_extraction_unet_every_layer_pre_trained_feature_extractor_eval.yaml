@@ -1,0 +1,260 @@
+# @package _global_
+
+project_name: "CD"
+log_directory: "lightning_logs"
+mode: test # train | test | validate_all
+
+id:
+  version: "CD_cond_separation_with_pre-trained_features_eval"
+  name: ""
+
+model:
+  # _target_: main.module_base.Audio_DM_Model
+  # learning_rate: 1.e-4
+  # beta1: 0.9
+  # beta2: 0.99
+  class_cond: True
+  separation: True
+
+  # these are if you call conditional and serve classifier free guidance purpose
+  # embedding_features: 768       # this gets passed to -> context_embedding_features
+  # embedding_max_length: 64     # this gets passed to -> context_embedding_max_length
+  # embedding_mask_proba: 0.1
+
+  context_features: 4 # ???
+  # context_channels: [1, 512, 1024, 1024, 1024, 1024, 1024] ### Optional[Sequence[int]] = None, this decides use_context_channels (might be somethig usefull)
+  # context_embedding_features: 32 #Optional[int] = None,
+  pre_trained_mixture_feature_extractor: lightning_logs/MSDM/2024-08-06T00-20-47__Testing_audiodm_cond_separation_simple/checkpoints/last.ckpt
+
+  in_channels: 1
+  channels: 256
+  patch_factor: 16
+  patch_blocks: 1
+  resnet_groups: 8
+  kernel_multiplier_downsample: 2
+  kernel_sizes_init: [1, 3, 7]
+  multipliers: [1, 2, 4, 4, 4, 4, 4]
+  factors: [4, 4, 4, 2, 2, 2]
+  num_blocks: [2, 2, 2, 2, 2, 2]
+  attentions: [False, False, False, True, True, True]
+  attention_heads: 8
+  attention_features: 128
+  attention_multiplier: 2
+  use_nearest_upsample: False
+  use_skip_scale: True
+  use_attention_bottleneck: True
+  use_context_time: True
+  # diffusion_sigma_data: 0.2
+  # diffusion_dynamic_threshold: 0.0
+
+# diffusion_sigma_distribution:
+#   # _target_: audio_diffusion_pytorch_.LogNormalDistribution
+#   mean: -3.0
+#   std: 1.0
+
+
+
+train_dataset:
+  _target_: main.data.TracksDataset
+  audio_files_dir: "dataset/slakh2100/train"
+  sr: 22050
+  channels: 1
+  min_duration: 12.0
+  max_duration: 640.0
+  aug_shift: True
+  sample_length: 262144
+  stems: ['bass', 'drums', 'guitar', 'piano']
+
+# val_dataset:
+#   _target_: main.data.TracksDataset
+#   audio_files_dir: "dataset/slakh2100/validation"
+#   sr: 22050
+#   channels: 1
+#   min_duration: 12.0
+#   max_duration: 640.0
+#   aug_shift: False #True
+#   sample_length: 262144
+#   stems: ['bass', 'drums', 'guitar', 'piano']
+
+val_dataset:
+  _target_: main.data.ChunkedSupervisedDataset_for_extraction
+  audio_dir: "dataset/slakh2100/test"
+  sample_rate: 22050
+  max_chunk_size: 262144
+  min_chunk_size: 262144
+  stems: ['bass', 'drums', 'guitar', 'piano']
+  only_multisource: True
+
+datamodule:
+  batch_size: 2
+  num_workers: 8
+  pin_memory: True
+
+
+
+audio_samples_logger:
+  _target_: main.audio_ctm.ClassCondSeparateTrackSampleLoggerCTM
+  num_items: 2 #10
+  channels: 1
+  sampling_rate: 22050
+  length: 262144
+  sampler:
+    # - heun 
+    - onestep
+    - cm_multistep_cd 
+    # - exact
+    # - exact
+  check_ctm_denoising_ability: True
+  clip_output: True
+  clip_denoised: False
+  denoise_steps_to_log:
+    # - 18
+    - 1
+    - 2
+    # - 1
+    # - 1
+  stems: ['bass', 'drums', 'guitar', 'piano']
+  models_to_log:
+    # - teacher_model
+    - net 
+    - net
+    # - ema_models[0]
+    # - ema_models[1]
+
+  # args for metrics calculation
+  model_to_calculate_metrics: net
+  sampler_to_calculate_metrics: cm_multistep_cd #heun
+  steps_to_calculate_metrics: 1
+
+
+
+callbacks:
+  rich_progress_bar:
+    _target_: pytorch_lightning.callbacks.RichProgressBar
+
+  model_summary:
+    _target_: pytorch_lightning.callbacks.RichModelSummary
+    max_depth: 1
+
+
+
+
+trainer:
+  accelerator: cuda
+  devices: [0] #, 1, 2] #,2] # Set `1` to train on GPU, `0` to train on CPU only, and `-1` to train on all GPUs, default `0`
+  precision: "bf16" # Precision used for tensors, default `32`
+  min_epochs: 0
+  max_epochs: 1000
+  max_steps: 600000
+  accumulate_grad_batches: 4
+  enable_model_summary: False
+  log_every_n_steps: 10 # Logs metrics every N batches
+  check_val_every_n_epoch: null
+  val_check_interval: #1000
+  limit_val_batches: 12 #55
+  limit_train_batches: 
+  strategy: ddp
+  num_sanity_val_steps: 0
+
+resume_from_checkpoint: lightning_logs/Audio_CTM/2024-08-16T03-42-51__Audiodm_cond_separation_with_pre-trained_features_CD_heun-17_DSM_loss_uniform/checkpoints/last.ckpt
+
+
+
+optim:
+    grad_clip: null
+    weight_decay: 0
+    lr: 1.e-5
+    betas: [0.9,0.999]
+    eps: 1.e-8
+    amsgrad: False
+    optimizer : radam
+    warmup_epochs: 1
+
+diffusion:
+    preconditioning: cd # ctm | ct | vp | ve | edm
+
+    # cm_train_defaults
+    target_ema_mode: "fixed"                                                    # "fixed" | "adaptive" 
+    scale_mode: "fixed"                                                         # "fixed" | "progressive"
+    # total_training_steps: 600000
+    start_scales: 18                                                            # cifar10 18  | Imagenet 40
+    end_scales: 18                                                              # cifar10 18  | Imagenet 40
+    distill_steps_per_iter: 50000                                               # only if scale_mode == "progdist"
+    teacher_model_path: lightning_logs/MSDM/2024-08-07T16-07-08__Audiodm_cond_separation_with_pre-trained_features/checkpoints/epoch=239-val_loss=0.0000.ckpt 
+    model_path:                                                                 ## ??? not sure what is this
+    training_mode: "cd"                                                        ## do not change this!!!
+    num_heun_step: 17                                                           # cifar10 17 IMagenet 39
+    num_heun_step_random: True
+    loss_norm: "mse"
+    use_fp16: False
+    ema_rate: []
+        # - 0.999
+        # - 0.9999
+    start_ema: 0.999
+    
+
+    # Network architecture
+    # edm_nn_ncsn: False
+    # edm_nn_ddpm: True                                                           # if data_name == 'cifar10' else False,
+    linear_probing: False       # ???
+    target_subtract: False
+
+    # model_and_diffusion_defaults
+    schedule_sampler: "uniform"                                                 # | "uniform" | "lognormal"
+    # sigma_min: 0.002
+    # sigma_max: 80.0
+    # sigma_data: 0.5
+    # rho: 7
+
+    sigma_min: 0.0001
+    sigma_max: 0.2495 #15.0
+    sigma_data: 0.2
+    rho: 9
+
+
+
+    weight_schedule: uniform
+    weight_schedule_multiplier: 1.0
+    diffusion_weight_schedule: "karras_weight"
+    rescaling: False
+
+
+    # ctm_loss_defaults
+
+    # CTM hyperparams
+    consistency_weight: 1.0
+    time_continuous: False
+    heun_step_strategy: 'weighted'
+    heun_step_multiplier: 1.0
+    self_learn: False
+    self_learn_iterative: False
+    inner_parametrization: 'edm'
+    outer_parametrization: 'euler'
+    ctm_estimate_outer_type: 'target_model_sg'
+    ctm_estimate_inner_type: 'model'
+    ctm_target_matching: False
+    ctm_target_inner_type: 'target_model_sg'
+    sample_s_strategy: 'uniform'                                                # 'smallest' | 'uniform' 
+    
+    save_png: False
+    save_period: 0
+    
+
+    # DSM hyperparams
+    diffusion_training: True
+    apply_adaptive_weight: False
+    apply_adaptive_weight_for_audio: True
+    denoising_weight: 1.0
+    diffusion_mult: 0.7
+    diffusion_schedule_sampler: "halflognormal" # ???
+    diffusion_training_frequency: 1.
+    p_mean: -3.0
+    p_std: 1.0
+
+    ### eval defaults ???
+    large_log: False
+
+    # # args to accomodate sound_ctm feature extracting idea
+    # match_point: z0 # zs | z0
+    # loss_norm: mse
+    # # unet_mode: full
