@@ -85,11 +85,6 @@ python train_audio.py --cfg configs/diffusion_model/Diff_cond_separation_unet_ev
 ```bash
 python main_audio_ctm.py --cfg configs/consistency_model/CD_sourse_extraction_unet_every_layer_pre_trained_feature_extractor_eval.yaml
 ```
-
----
-
-Here’s an updated section to acknowledge the codebases your work was built upon. You can include this in your README file:
-
 ---
 
 ## Acknowledgments
