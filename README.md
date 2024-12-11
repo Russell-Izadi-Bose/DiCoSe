@@ -24,7 +24,7 @@ In this work, we integrate a score-matching diffusion model into a standard dete
 
 ## Checkpoints
 
-Please contact the authors for checkpoints.
+Please contact the authors for checkpoints. 
 
 ---
 
