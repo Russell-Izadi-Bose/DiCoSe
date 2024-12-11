@@ -112,8 +112,7 @@ We greatly appreciate the authors of these repositories for their contributions 
   primaryClass={cs.SD},
   url={https://arxiv.org/abs/2412.06965}, 
 }
-@inproceedings{
-  anonymous2024improving,
+@inproceedings{anonymous2024improving,
   title={Improving Source Extraction with Diffusion and Consistency Models},
   author={Anonymous},
   booktitle={Submitted to The Thirteenth International Conference on Learning Representations},
