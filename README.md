@@ -4,9 +4,9 @@
 
 This repository houses the official PyTorch implementation of the paper titled **"Improving Source Extraction with Diffusion and Consistency Models"** on the Slakh2100 dataset. The paper was presented as an oral presentation at **NeurIPS 2024 Workshop Audio Imagination: AI-Driven Speech, Music, and Sound Generation**.
 
-- [arXiv](link here)  
-- [Demo Page](https://consistency-separation.github.io/)  
-- [OpenReview](https://openreview.net/forum?id=nskR7tWE6z)  
+- [arXiv](https://arxiv.org/abs/2412.06965)
+- [Demo](https://consistency-separation.github.io/)
+- [OpenReview](https://openreview.net/forum?id=nskR7tWE6z)
 
 **Contacts**:
 - Tornike Karchkhadze: [tkarchkhadze@ucsd.edu](mailto:tkarchkhadze@ucsd.edu)  
@@ -107,12 +107,23 @@ We greatly appreciate the authors of these repositories for their contributions 
 ## Citations
 
 ```bibtex
-@inproceedings{
-  karchkhadze2024improving,
-  title={Improving Source Extraction with Diffusion and Consistency Models},
+
+@misc{karchkhadze2024improvingsourceextractiondiffusion,
+  title={Improving Source Extraction with Diffusion and Consistency Models}, 
   author={Tornike Karchkhadze and Mohammad Rasool Izadi and Shuo Zhang},
-  booktitle={Audio Imagination: NeurIPS 2024 Workshop AI-Driven Speech, Music, and Sound Generation},
   year={2024},
-  url={https://openreview.net/forum?id=nskR7tWE6z}
+  eprint={2412.06965},
+  archivePrefix={arXiv},
+  primaryClass={cs.SD},
+  url={https://arxiv.org/abs/2412.06965}, 
+}
+@inproceedings{
+  anonymous2024improving,
+  title={Improving Source Extraction with Diffusion and Consistency Models},
+  author={Anonymous},
+  booktitle={Submitted to The Thirteenth International Conference on Learning Representations},
+  year={2024},
+  url={https://openreview.net/forum?id=nR2DHRxWS2},
+  note={under review}
 }
 ```
