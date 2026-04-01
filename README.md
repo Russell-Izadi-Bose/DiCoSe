@@ -24,7 +24,23 @@ In this work, we integrate a score-matching diffusion model into a standard dete
 
 ## Checkpoints
 
-Please contact the authors for checkpoints. 
+Pre-trained checkpoints are available on Zenodo: [https://zenodo.org/records/15468245](https://zenodo.org/records/15468245)
+
+Download and set up the checkpoints as follows:
+
+```bash
+# Create the lightning_logs directory
+mkdir -p lightning_logs
+
+# Download the checkpoint archive into it
+wget -P lightning_logs https://zenodo.org/records/15468245/files/DiCoSe_checpoints.zip
+
+# Unzip in place
+unzip lightning_logs/DiCoSe_checpoints.zip -d lightning_logs/
+
+# Remove the zip file
+rm lightning_logs/DiCoSe_checpoints.zip
+```
 
 ---
 
