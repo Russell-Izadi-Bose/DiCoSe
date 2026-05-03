@@ -2,7 +2,7 @@
 
 <p align="center"></p>
 
-This repository houses the official PyTorch implementation of the paper **"Improving Music Source Separation with Diffusion and Consistency Refinement"**, submitted to **ISMIR 2025**.
+This repository houses the official PyTorch implementation of the paper **"Improving Music Source Separation with Diffusion and Consistency Refinement"**.
 
 - [arXiv](https://arxiv.org/abs/2412.06965)
 - [Demo](https://consistency-separation.github.io/)
