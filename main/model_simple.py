@@ -62,7 +62,7 @@ class Audio_DM_Model_simple(pl.LightningModule):
     def get_input(self, batch):
 
         if isinstance(batch, (list, tuple)) and self.class_cond and self.separation:
-            waveforms, class_indexes, stems  = batch
+            waveforms, class_indexes, stems  = batch[0], batch[1], batch[2]
 
             batch_size, channels, feature_width = waveforms.shape
             mixture = stems.sum(1)
@@ -96,11 +96,11 @@ class Audio_DM_Model_simple(pl.LightningModule):
 
             
         elif isinstance(batch, (list, tuple)) and self.class_cond:
-            waveforms, class_indexes, _ = batch
+            waveforms, class_indexes, _ = batch[0], batch[1], batch[2]
             channels_list = None
             embedding = None
         elif isinstance(batch, (list, tuple)) :
-            waveforms, _, _= batch
+            waveforms, _, _= batch[0], batch[1], batch[2]
             class_indexes = None
             channels_list = None  
             embedding = None          
@@ -141,7 +141,7 @@ class Audio_DM_Model_simple(pl.LightningModule):
 
     def validation_step(self, batch, batch_idx):
         waveforms, class_indexes, channels_list, embedding = self.get_input(batch)
-        mixtures = batch[-1].sum(1)
+        mixtures = batch[2].sum(1)
         predictions = self.model(mixtures, features = class_indexes, channels_list=channels_list, embedding = embedding)
 
         # Compute weighted loss

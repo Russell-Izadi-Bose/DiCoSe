@@ -199,7 +199,7 @@ def main():
     ckpt_callback = ModelCheckpoint(
         dirpath=checkpoint_path,
         save_top_k=2,
-        monitor="msdm_si_snr_avg",
+        monitor="msdm_si_sdr_avg",
         mode="max",
         save_last=True,
         filename='{epoch}-{msdm_si_snr_avg:.4f}',

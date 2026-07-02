@@ -24,7 +24,7 @@ from typing import *
 from einops import rearrange
 import torchaudio
 from pytorch_lightning.utilities.rank_zero import rank_zero_only
-from audioldm_eval import EvaluationHelper
+# from audioldm_eval import EvaluationHelper  # unused: only referenced by UncondSampleLogger.on_validation_epoch_end, which ClassCondSeparateTrackSampleLoggerCTM overrides
 import shutil
 from pathlib import Path
 from torchmetrics.audio import ScaleInvariantSignalNoiseRatio, ScaleInvariantSignalDistortionRatio

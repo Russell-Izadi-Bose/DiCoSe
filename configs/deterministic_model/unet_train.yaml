@@ -2,7 +2,7 @@
 
 project_name: "Deterministic_model"
 log_directory: "lightning_logs"
-mode: test # train | test | validate_all
+mode: train
 
 id:
   version: "Testing_audiodm_cond_separation_simple"
@@ -14,16 +14,10 @@ model:
   beta1: 0.9
   beta2: 0.99
   class_cond: True
-  separation: False #True
+  separation: False
 
-  # these are if you call conditional and serve classifier free guidance purpose
-  # embedding_features: 768       # this gets passed to -> context_embedding_features
-  # embedding_max_length: 64     # this gets passed to -> context_embedding_max_length
-  # embedding_mask_proba: 0.1
-
-  context_features: 4 # ???
-  context_channels: null #[1, 512, 1024, 1024, 1024, 1024, 1024] ### Optional[Sequence[int]] = None, this decides use_context_channels (might be somethig usefull)
-  # context_embedding_features: 32 #Optional[int] = None,
+  context_features: 4 
+  context_channels: null 
 
   in_channels: 1
   channels: 256
@@ -58,21 +52,9 @@ train_dataset:
   sample_length: 262144
   stems: ['bass', 'drums', 'guitar', 'piano']
 
-# val_dataset:
-#   _target_: main.data.TracksDataset
-#   audio_files_dir: "dataset/slakh2100/validation"
-#   sr: 22050
-#   channels: 1
-#   min_duration: 12.0
-#   max_duration: 640.0
-#   aug_shift: False #True
-#   sample_length: 262144
-#   stems: ['bass', 'drums', 'guitar', 'piano']
-
-
 val_dataset:
   _target_: main.data.ChunkedSupervisedDataset_for_extraction
-  audio_dir: "dataset/slakh2100/test"
+  audio_dir: "dataset/slakh2100/validation"
   sample_rate: 22050
   max_chunk_size: 262144
   min_chunk_size: 262144
@@ -81,8 +63,8 @@ val_dataset:
 
 
 datamodule:
-  batch_size: 50 #8
-  num_workers: 4
+  batch_size: 2 #50 #8
+  num_workers: 0 #4
   pin_memory: True
 
 
@@ -94,6 +76,7 @@ audio_samples_logger:
   sampling_rate: 22050
   length: 262144
   stems: ['bass', 'drums', 'guitar', 'piano']
+  msdm_style: true
 
 
 
@@ -119,9 +102,9 @@ trainer:
   check_val_every_n_epoch: null
   val_check_interval: #4000
   limit_val_batches: 5
-  limit_train_batches:
+  limit_train_batches: 5
   strategy: ddp
   num_sanity_val_steps: 0
   
 
-resume_from_checkpoint: #lightning_logs/Deterministic_model/2024-08-06T00-20-47__Testing_audiodm_cond_separation_simple/checkpoints/last.ckpt
+resume_from_checkpoint:

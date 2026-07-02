@@ -451,7 +451,7 @@ class SupervisedDataset(SeparationDataset):
         audio_dir: Union[str, Path],
         stems: List[str],
         sample_rate: int,
-        sample_eps_in_sec: int = 0.1
+        sample_eps_in_sec: float = 0.15
     ):
         super().__init__()
         self.sr = sample_rate
@@ -581,14 +581,15 @@ class ChunkedSupervisedDataset_for_extraction(ChunkedSupervisedDataset):
         chunk_start, chunk_stop = self.get_chunk_indices(item)
         tracks = self.get_tracks(self.get_chunk_track(item))
         tracks = tuple([t[:, chunk_start:chunk_stop] for t in tracks])
-        
-        # Create a zero tensor with the same shape as tracks
-        zero_tensor = torch.zeros_like(tracks[0])
-        
-        # Create a one-hot vector of shape [4, 1, 262144]
-        one_hot_vector = torch.zeros((4))
-        
+
         # Stack the existing output to make the shape [4, 1, 262144]
         stacked_tracks = torch.stack(tracks)#.unsqueeze(1)
 
-        return zero_tensor, one_hot_vector, stacked_tracks   
+        # Randomly select a stem, matching TracksDataset.get_song_chunk's convention
+        stem_index = random.randint(0, len(self.stems) - 1)
+        selected_stem = stacked_tracks[stem_index]
+
+        one_hot_vector = torch.zeros(len(self.stems))
+        one_hot_vector[stem_index] = 1.0
+
+        return selected_stem, one_hot_vector, stacked_tracks, self.get_chunk_track(item)

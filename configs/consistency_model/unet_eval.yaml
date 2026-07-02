@@ -24,7 +24,7 @@ model:
   context_features: 4 # ???
   # context_channels: [1, 512, 1024, 1024, 1024, 1024, 1024] ### Optional[Sequence[int]] = None, this decides use_context_channels (might be somethig usefull)
   # context_embedding_features: 32 #Optional[int] = None,
-  pre_trained_mixture_feature_extractor: lightning_logs/MSDM/2024-08-06T00-20-47__Testing_audiodm_cond_separation_simple/checkpoints/last.ckpt
+  pre_trained_mixture_feature_extractor: lightning_logs/DiCoSe/Deterministic_model_unet/model.ckpt
 
   in_channels: 1
   channels: 256
@@ -156,7 +156,7 @@ trainer:
   strategy: ddp
   num_sanity_val_steps: 0
 
-resume_from_checkpoint: lightning_logs/Audio_CTM/2024-08-16T03-42-51__Audiodm_cond_separation_with_pre-trained_features_CD_heun-17_DSM_loss_uniform/checkpoints/last.ckpt
+resume_from_checkpoint: lightning_logs/DiCoSe/CD_unet/model.ckpt
 
 
 
@@ -180,7 +180,7 @@ diffusion:
     start_scales: 18                                                            # cifar10 18  | Imagenet 40
     end_scales: 18                                                              # cifar10 18  | Imagenet 40
     distill_steps_per_iter: 50000                                               # only if scale_mode == "progdist"
-    teacher_model_path: lightning_logs/MSDM/2024-08-07T16-07-08__Audiodm_cond_separation_with_pre-trained_features/checkpoints/epoch=239-val_loss=0.0000.ckpt 
+    teacher_model_path: lightning_logs/DiCoSe/diffusion_model_unet/model.ckpt
     model_path:                                                                 ## ??? not sure what is this
     training_mode: "cd"                                                        ## do not change this!!!
     num_heun_step: 17                                                           # cifar10 17 IMagenet 39

@@ -1,11 +1,11 @@
 # @package _global_
 
-project_name: "diffusion_model"
+project_name: diffusion_model
 log_directory: "lightning_logs"
-mode: train # train | test | validate_all
+mode: test 
 
 id:
-  version: "Diffusion_Audiodm_cond_separation_with_pre-trained_features"
+  version: "Diffusion_Audiodm_cond_separation_with_pre-trained_features_eval"
   name: ""
 
 model:
@@ -16,16 +16,8 @@ model:
   class_cond: True
   separation: True
 
-  # these are if you call conditional and serve classifier free guidance purpose
-  # embedding_features: 768       # this gets passed to -> context_embedding_features
-  # embedding_max_length: 64     # this gets passed to -> context_embedding_max_length
-  # embedding_mask_proba: 0.1
-
-  context_features: 4 # ???
-  # context_channels: [1, 512, 1024, 1024, 1024, 1024, 1024,  1024, 1024, 1024, 1024, 1024, 1024, 512, 1] ### Optional[Sequence[int]] = None, this decides use_context_channels (might be somethig usefull)
-  # context_embedding_features: 32 #Optional[int] = None,
-  # mixture_features_channels: [1, 256, 512, 1024, 1024, 1024, 1024, 1024,  1024, 1024, 1024, 1024, 1024, 512, 256]
-  pre_trained_mixture_feature_extractor: lightning_logs/MSDM/2024-08-06T00-20-47__Testing_audiodm_cond_separation_simple/checkpoints/last.ckpt
+  context_features: 4 
+  pre_trained_mixture_feature_extractor: lightning_logs/DiCoSe/Deterministic_model_unet/model.ckpt
 
   in_channels: 1
   channels: 256
@@ -66,18 +58,17 @@ train_dataset:
   stems: ['bass', 'drums', 'guitar', 'piano']
 
 val_dataset:
-  _target_: main.data.TracksDataset
-  audio_files_dir: "dataset/slakh2100/validation"
-  sr: 22050
-  channels: 1
-  min_duration: 12.0
-  max_duration: 640.0
-  aug_shift: False #True
-  sample_length: 262144
+  _target_: main.data.ChunkedSupervisedDataset_for_extraction
+  audio_dir: "dataset/slakh2100/test"
+  sample_rate: 22050
+  max_chunk_size: 262144
+  min_chunk_size: 262144
   stems: ['bass', 'drums', 'guitar', 'piano']
+  only_multisource: True
+
 
 datamodule:
-  batch_size: 50 #8
+  batch_size: 150 #50 #8
   num_workers: 4
   pin_memory: True
 
@@ -89,18 +80,20 @@ audio_samples_logger:
   channels: 1
   sampling_rate: 22050
   length: 262144
-  sampling_steps: 100
+  sampling_steps: 2
   stems: ['bass', 'drums', 'guitar', 'piano']
+  msdm_style: true
+
 diffusion_sampler:
-  _target_: audio_diffusion_pytorch_.ADPM2Sampler
-  rho: 1.0
+  _target_: audio_diffusion_pytorch_.diffusion.MSDMSampler
+  s_churn: 20.0
+  num_resamples: 2
+
 diffusion_schedule:
   _target_: audio_diffusion_pytorch_.KarrasSchedule
   sigma_min: 0.0001
-  sigma_max: 3.0
+  sigma_max: 0.01
   rho: 9.0
-
-
 
 callbacks:
   rich_progress_bar:
@@ -115,7 +108,7 @@ callbacks:
 
 trainer:
   accelerator: cuda
-  devices: [0] #, 1, 2, 3] # Set `1` to train on GPU, `0` to train on CPU only, and `-1` to train on all GPUs, default `0`
+  devices: [0, 1, 2] #, 3] # Set `1` to train on GPU, `0` to train on CPU only, and `-1` to train on all GPUs, default `0`
   precision: "bf16" # Precision used for tensors, default `32`
   min_epochs: 0
   max_epochs: -1
@@ -123,10 +116,10 @@ trainer:
   log_every_n_steps: 10 # Logs metrics every N batches
   check_val_every_n_epoch: 20 # null
   val_check_interval: #4000
-  limit_val_batches: 6
-  limit_train_batches: 2
+  limit_val_batches: #8 #55
+  limit_train_batches: 
   strategy: ddp
   num_sanity_val_steps: 0
   
 
-resume_from_checkpoint:
+resume_from_checkpoint: lightning_logs/DiCoSe/diffusion_model_unet/model.ckpt

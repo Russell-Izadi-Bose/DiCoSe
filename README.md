@@ -23,34 +23,6 @@ In this work, we propose an approach to music source separation that uses a gene
 
 ---
 
-## Checkpoints
-
-### U-Net (Slakh2100)
-
-Pre-trained checkpoints are available on Zenodo: [https://zenodo.org/records/15468245](https://zenodo.org/records/15468245)
-
-Download and set up the checkpoints as follows:
-
-```bash
-# Create the lightning_logs directory
-mkdir -p lightning_logs
-
-# Download the checkpoint archive into it
-wget -P lightning_logs https://zenodo.org/records/15468245/files/DiCoSe_checpoints.zip
-
-# Unzip in place
-unzip lightning_logs/DiCoSe_checpoints.zip -d lightning_logs/
-
-# Remove the zip file
-rm lightning_logs/DiCoSe_checpoints.zip
-```
-
-### BS-RoFormer (MUSDB18)
-
-Checkpoints coming soon.
-
----
-
 ## Prerequisites
 
 ### 1. Datasets
@@ -89,7 +61,7 @@ This repository uses Python 3.9.19.
 conda env create -f environment.yaml
 
 # Activate environment
-conda activate ctm
+conda activate dicose
 ```
 
 ---
@@ -100,17 +72,17 @@ conda activate ctm
 
 #### Deterministic Model Training
 ```bash
-python train_audio_simple.py --cfg configs/deterministic_model/cond_separation_simple_no_diff_train.yaml
+python train_audio_simple.py --cfg configs/deterministic_model/unet_train.yaml
 ```
 
 #### Diffusion Model Training
 ```bash
-python train_audio.py --cfg configs/diffusion_model/train_audiodm_cond_separation_unet_every_layer_pre_trained_feature_extractor.yaml
+python train_audio.py --cfg configs/diffusion_model/unet_train.yaml
 ```
 
 #### Consistency Model Training
 ```bash
-python main_audio_ctm.py --cfg configs/consistency_model/CD_sourse_extraction_unet_every_layer_pre_trained_feature_extractor_train.yaml
+python main_audio_ctm.py --cfg configs/consistency_model/unet_train.yaml
 ```
 
 ### BS-RoFormer Experiments (MUSDB18)
@@ -121,21 +93,37 @@ Code coming soon!
 
 ## Sampling and Evaluation
 
+### Checkpoints
+
+All pre-trained checkpoints are hosted on Hugging Face Hub: [karchkha/DiCoSe](https://huggingface.co/karchkha/DiCoSe).
+
+```bash
+hf download karchkha/DiCoSe --local-dir lightning_logs/DiCoSe
+```
+
+Or download a single checkpoint, e.g.:
+
+```bash
+hf download karchkha/DiCoSe CD_unet/model.ckpt --local-dir lightning_logs/DiCoSe
+```
+
+Each checkpoint lands at `lightning_logs/DiCoSe/<name>/model.ckpt`.
+
 ### U-Net Experiments (Slakh2100)
 
 #### Deterministic Model Evaluation
 ```bash
-python train_audio_simple.py --cfg configs/deterministic_model/cond_separation_simple_no_diff_eval.yaml
+python train_audio_simple.py --cfg configs/deterministic_model/unet_eval.yaml
 ```
 
 #### Diffusion Model Evaluation
 ```bash
-python train_audio.py --cfg configs/diffusion_model/Diff_cond_separation_unet_every_layer_pre_trained_feature_extractor_eval_MSDMSampler.yaml
+python train_audio.py --cfg configs/diffusion_model/unet_eval.yaml
 ```
 
 #### Consistency Model Evaluation
 ```bash
-python main_audio_ctm.py --cfg configs/consistency_model/CD_sourse_extraction_unet_every_layer_pre_trained_feature_extractor_eval.yaml
+python main_audio_ctm.py --cfg configs/consistency_model/unet_eval.yaml
 ```
 
 ### BS-RoFormer Experiments (MUSDB18)
