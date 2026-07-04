@@ -9,21 +9,11 @@ id:
   name: ""
 
 model:
-  # _target_: main.module_base.Audio_DM_Model
-  # learning_rate: 1.e-4
-  # beta1: 0.9
-  # beta2: 0.99
   class_cond: True
   separation: True
 
-  # these are if you call conditional and serve classifier free guidance purpose
-  # embedding_features: 768       # this gets passed to -> context_embedding_features
-  # embedding_max_length: 64     # this gets passed to -> context_embedding_max_length
-  # embedding_mask_proba: 0.1
 
-  context_features: 4 # ???
-  # context_channels: [1, 512, 1024, 1024, 1024, 1024, 1024] ### Optional[Sequence[int]] = None, this decides use_context_channels (might be somethig usefull)
-  # context_embedding_features: 32 #Optional[int] = None,
+  context_features: 4 
   pre_trained_mixture_feature_extractor: lightning_logs/DiCoSe/Deterministic_model_unet/model.ckpt
 
   in_channels: 1
@@ -44,13 +34,6 @@ model:
   use_skip_scale: True
   use_attention_bottleneck: True
   use_context_time: True
-  # diffusion_sigma_data: 0.2
-  # diffusion_dynamic_threshold: 0.0
-
-# diffusion_sigma_distribution:
-#   # _target_: audio_diffusion_pytorch_.LogNormalDistribution
-#   mean: -3.0
-#   std: 1.0
 
 
 
@@ -65,16 +48,6 @@ train_dataset:
   sample_length: 262144
   stems: ['bass', 'drums', 'guitar', 'piano']
 
-# val_dataset:
-#   _target_: main.data.TracksDataset
-#   audio_files_dir: "dataset/slakh2100/validation"
-#   sr: 22050
-#   channels: 1
-#   min_duration: 12.0
-#   max_duration: 640.0
-#   aug_shift: False #True
-#   sample_length: 262144
-#   stems: ['bass', 'drums', 'guitar', 'piano']
 
 val_dataset:
   _target_: main.data.ChunkedSupervisedDataset_for_extraction
@@ -86,7 +59,7 @@ val_dataset:
   only_multisource: True
 
 datamodule:
-  batch_size: 2
+  batch_size: 150
   num_workers: 8
   pin_memory: True
 
@@ -98,33 +71,19 @@ audio_samples_logger:
   channels: 1
   sampling_rate: 22050
   length: 262144
-  sampler:
-    # - heun 
-    - onestep
-    - cm_multistep_cd 
-    # - exact
-    # - exact
-  check_ctm_denoising_ability: True
   clip_output: True
   clip_denoised: False
-  denoise_steps_to_log:
-    # - 18
-    - 1
-    - 2
-    # - 1
-    # - 1
   stems: ['bass', 'drums', 'guitar', 'piano']
-  models_to_log:
-    # - teacher_model
-    - net 
-    - net
-    # - ema_models[0]
-    # - ema_models[1]
+  msdm_style: True
 
   # args for metrics calculation
   model_to_calculate_metrics: net
   sampler_to_calculate_metrics: cm_multistep_cd #heun
   steps_to_calculate_metrics: 1
+
+  sigma_max_sampling: 0.01244 # 0.2497 # 0.01244 #
+  sigma_min_sampling: null
+  rho_sampling: null
 
 
 
@@ -141,7 +100,7 @@ callbacks:
 
 trainer:
   accelerator: cuda
-  devices: [0] #, 1, 2] #,2] # Set `1` to train on GPU, `0` to train on CPU only, and `-1` to train on all GPUs, default `0`
+  devices: [0, 1, 2] #,2] # Set `1` to train on GPU, `0` to train on CPU only, and `-1` to train on all GPUs, default `0`
   precision: "bf16" # Precision used for tensors, default `32`
   min_epochs: 0
   max_epochs: 1000
@@ -151,7 +110,7 @@ trainer:
   log_every_n_steps: 10 # Logs metrics every N batches
   check_val_every_n_epoch: null
   val_check_interval: #1000
-  limit_val_batches: 12 #55
+  limit_val_batches:
   limit_train_batches: 
   strategy: ddp
   num_sanity_val_steps: 0
@@ -207,7 +166,7 @@ diffusion:
     # rho: 7
 
     sigma_min: 0.0001
-    sigma_max: 0.2495 #15.0
+    sigma_max: 10.0 #15.0
     sigma_data: 0.2
     rho: 9
 

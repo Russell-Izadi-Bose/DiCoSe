@@ -288,14 +288,14 @@ def sample_multistep_cd(
             sigmas.append((t_max_rho + ts[i] / (steps - 1) * (t_min_rho - t_max_rho)) ** rho)
         sigmas = th.tensor(sigmas)
         sigmas = append_zero(sigmas).to(x.device)
-    indices = range(len(sigmas) - 1)
+    indices = list(range(len(sigmas) - 1))[:-1]
     if progress:
         from tqdm.auto import tqdm
 
         indices = tqdm(indices)
 
 
-    for i in indices[:-1]:
+    for i in indices:
         sigma = sigmas[i]
         # print(i, sigma, sigmas[i+1])
         #print(0.002 * s_in)
