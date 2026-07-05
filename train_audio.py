@@ -76,12 +76,28 @@ def update_config_with_args(config, cli_args):
         for k in keys[:-1]:
             d = d.setdefault(k, {})
         # Convert value to appropriate type
-        if isinstance(d[keys[-1]], bool):
-            value = bool(value)
-        elif isinstance(d[keys[-1]], int):
+        current = d.get(keys[-1])
+        if isinstance(current, bool):
+            value = str(value).lower() in ('true', '1', 'yes')
+        elif isinstance(current, int):
             value = int(value)
-        elif isinstance(d[keys[-1]], float):
+        elif isinstance(current, float):
             value = float(value)
+        elif isinstance(current, list) and isinstance(value, str):
+            # e.g. --trainer.devices=0 or --trainer.devices=0,1,2
+            value = [int(v) for v in value.strip('[]').split(',') if v != '']
+        elif current is None and isinstance(value, str):
+            # no existing value to match a type against (e.g. a yaml key left blank) - infer one
+            if value.lower() in ('true', 'false'):
+                value = value.lower() == 'true'
+            else:
+                try:
+                    value = int(value)
+                except ValueError:
+                    try:
+                        value = float(value)
+                    except ValueError:
+                        pass
         d[keys[-1]] = value
 
 def flatten_dict(d, parent_key='', sep='.'):
@@ -184,7 +200,6 @@ def main():
         project= cfg.project_name,
         config=flattened_config,
         name=nowname,
-        entity='tornike_karchkha',
     )
     wandb_logger._project = ""  # prevent naming experiment nama 2 time in logginf vals
 

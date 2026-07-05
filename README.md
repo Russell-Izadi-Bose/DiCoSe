@@ -64,6 +64,14 @@ conda env create -f environment.yaml
 conda activate dicose
 ```
 
+### 3. Weights & Biases
+
+Training and evaluation both require a [Weights & Biases](https://wandb.ai) account for logging.
+
+```bash
+wandb login
+```
+
 ---
 
 ## Training
