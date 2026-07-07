@@ -9,6 +9,7 @@ id:
   name: ""
 
 model:
+  _target_: main.audio_ctm.Audio_CTM_Model
   class_cond: True
   separation: True
 

@@ -63,8 +63,8 @@ val_dataset:
 
 
 datamodule:
-  batch_size: 2 #50 #8
-  num_workers: 0 #4
+  batch_size: 50 #8
+  num_workers: 4
   pin_memory: True
 
 
@@ -93,7 +93,7 @@ callbacks:
 
 trainer:
   accelerator: cuda
-  devices: [0] # 1, 2, 3] # Set `1` to train on GPU, `0` to train on CPU only, and `-1` to train on all GPUs, default `0`
+  devices: [0, 1, 2] # Set `1` to train on GPU, `0` to train on CPU only, and `-1` to train on all GPUs, default `0`
   precision: "bf16" # Precision used for tensors, default `32`
   min_epochs: 0
   max_epochs: -1

@@ -51,7 +51,7 @@ class CosineWarmupScheduler(optim.lr_scheduler._LRScheduler):
         return lr_factor
     
 class Audio_CTM_Model(pl.LightningModule):
-    def __init__(self, cfg=None):
+    def __init__(self, cfg=None, **kwargs):
         super().__init__()
         self.cfg = cfg
         self.save_hyperparameters()
@@ -428,7 +428,7 @@ class Audio_MSST_CTM_Model(pl.LightningModule):
     - Teacher checkpoint loaded from an Audio_MSST_DM_Model .ckpt (strict=False)
     """
 
-    def __init__(self, cfg=None):
+    def __init__(self, cfg=None, **kwargs):
         super().__init__()
         self.cfg = cfg
         self.save_hyperparameters()
