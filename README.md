@@ -164,6 +164,19 @@ python train_diff.py --cfg configs/diffusion_model/bsrf_eval.yaml
 python train_cd.py --cfg configs/consistency_model/bsrf_eval.yaml
 ```
 
+### Expected Results
+
+Full-test-set eval metrics from the released checkpoints (`msdm_si_sdr_avg`, `sdr_avg`, `sdr_median_of_medians` as logged to wandb):
+
+| Track | Model | msdm_si_sdr_avg | sdr_avg | sdr_median_of_medians |
+|---|---|---|---|---|
+| U-Net (Slakh2100) | Deterministic | 21.384 | 10.946 | 10.856 |
+| U-Net (Slakh2100) | Diffusion | 22.747 | 11.619 | 11.650 |
+| U-Net (Slakh2100) | Consistency | 23.073 | 11.490 | 11.614 |
+| BS-RoFormer (MUSDB18) | Deterministic | 15.098 | 9.839 | 9.999 |
+| BS-RoFormer (MUSDB18) | Diffusion | 15.566 | 10.385 | 10.581 |
+| BS-RoFormer (MUSDB18) | Consistency | 15.610 | 10.418 | 10.602 |
+
 ---
 
 ## Acknowledgments
