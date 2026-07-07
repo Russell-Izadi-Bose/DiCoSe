@@ -367,11 +367,12 @@ class KarrasDenoiser:
             # print("Std:", target.std().item())
             # print("\n\n\n")
             # consistency_loss = self.feature_extractor((estimate + 1) / 2.0, (target + 1) / 2.0, reduction="none").mean(dim=[1, 2]) #* weights
-            consistency_loss = self.feature_extractor(estimate, target, reduction="none").mean(dim=[1, 2])
-            
-            # Apply weights to the loss
+            consistency_loss = self.feature_extractor(estimate, target, reduction="none").mean(dim=list(range(1, estimate.ndim)))
             consistency_loss = consistency_loss * weights
-                  
+
+        elif self.args.loss_norm == 'bsroformer':
+            consistency_loss = self._bsroformer_loss(estimate, target) * weights
+
         else:
             raise NotImplementedError
         return consistency_loss
@@ -385,8 +386,42 @@ class KarrasDenoiser:
             last_name = name
         return last_layer
 
+    def _bsroformer_loss(self, recon, target):
+        """Waveform L1 + multi-resolution STFT L1, per-example [B] (no reduction)."""
+        B = recon.shape[0]
+        # normalise to [B, C, T]
+        def to_bct(x):
+            if x.ndim == 2:
+                return x[:, None, :]
+            elif x.ndim == 3:
+                return x
+            elif x.ndim == 4:
+                return x.view(x.shape[0], x.shape[1] * x.shape[2], x.shape[3])
+            raise ValueError(f"Unsupported shape {x.shape}")
+        recon_bct = to_bct(recon).float()
+        target_bct = to_bct(target).float()
+        _, C, T = recon_bct.shape
+        wave_loss = F.l1_loss(recon_bct, target_bct, reduction='none').view(B, -1).mean(dim=1)
+        window_sizes = (4096, 2048, 1024, 512, 256)
+        n_fft_base = 2048
+        hop_length = 147
+        multi_stft_loss = recon_bct.new_zeros(B)
+        for ws in window_sizes:
+            n_fft = max(ws, n_fft_base)
+            window = th.hann_window(ws, device=recon.device)
+            stft_kw = dict(n_fft=n_fft, win_length=ws, hop_length=hop_length,
+                           window=window, return_complex=True, normalized=False)
+            r_flat = recon_bct.reshape(B * C, T).float()
+            t_flat = target_bct.reshape(B * C, T).float()
+            r_Y = th.stft(r_flat, **stft_kw)   # [B*C, F, n_frames]
+            t_Y = th.stft(t_flat, **stft_kw)
+            r_Y = r_Y.view(B, C, *r_Y.shape[-2:])   # [B, C, F, n_frames]
+            t_Y = t_Y.view(B, C, *t_Y.shape[-2:])
+            multi_stft_loss = multi_stft_loss + (r_Y - t_Y).abs().mean(dim=(1, 2, 3))
+        return wave_loss + multi_stft_loss  # [B]
+
     def get_DSM_loss(self, model, x_start, model_kwargs, consistency_loss,
-                           step, init_step):
+                           step, init_step, target=None):
         sigmas, denoising_weights = self.diffusion_schedule_sampler.sample(x_start.shape[0], device = x_start.device) #dist_util.dev())
         noise = th.randn_like(x_start)
         dims = x_start.ndim
@@ -394,10 +429,17 @@ class KarrasDenoiser:
         if self.args.training_mode == 'ctm':
             denoised, _ = self.get_denoised_and_G(model, x_t, sigmas, s=sigmas, ctm=True, teacher=True, **model_kwargs)
         elif self.args.training_mode == 'cd':
-            denoised, _ = self.get_denoised_and_G(model, x_t, sigmas, s=None, ctm=False, teacher=False, **model_kwargs)
+            denoised, _ = self.get_denoised_and_G(model, x_t, sigmas, s=None, ctm=False, teacher=True, **model_kwargs)
         snrs = self.get_snr(sigmas)
-        denoising_weights = append_dims(get_weightings(self.args.diffusion_weight_schedule, snrs, self.args.sigma_data, None, None), dims)
-        denoising_loss = mean_flat(denoising_weights * (denoised - x_start) ** 2)
+        raw_weights = get_weightings(self.args.diffusion_weight_schedule, snrs, self.args.sigma_data, None, None)  # [B]
+        denoising_weights = append_dims(raw_weights, dims)  # [B, 1, 1, ...]
+        dsm_target = target if target is not None else x_start
+        dsm_loss_type = getattr(self.args, 'dsm_loss_type', 'mse')
+        if dsm_loss_type == 'bsroformer':
+            # _bsroformer_loss returns [B]; use raw_weights [B] to avoid wrong broadcasting
+            denoising_loss = raw_weights * self._bsroformer_loss(denoised, dsm_target)
+        else:
+            denoising_loss = mean_flat(denoising_weights * (denoised - dsm_target) ** 2)
         if self.args.apply_adaptive_weight:
             last_layer = self.extract_last_layer(model)
 
@@ -433,6 +475,7 @@ class KarrasDenoiser:
         gan_num_heun_step=-1,
         diffusion_training_=False,
         gan_training_=False,
+        target=None,
     ):
         if model_kwargs is None:
             model_kwargs = {}
@@ -480,8 +523,9 @@ class KarrasDenoiser:
 
         if self.args.diffusion_training:
             if diffusion_training_:
+                dsm_target = target if target is not None else x_start
                 terms['denoising_loss'] = self.get_DSM_loss(model, x_start, model_kwargs,
                                                                     terms["consistency_loss"],
-                                                                    step, init_step)
+                                                                    step, init_step, target=dsm_target)
 
         return terms

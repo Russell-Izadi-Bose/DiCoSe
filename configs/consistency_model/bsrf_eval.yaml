@@ -1,0 +1,448 @@
+# @package _global_
+
+project_name: "CD_MSST_bs_roformer"
+log_directory: "lightning_logs"
+mode: test # train | test | validate_all
+
+id:
+  version: "CD_MSST_TEST"
+  name: ""
+
+model:
+  _target_: main.audio_ctm.Audio_MSST_CTM_Model
+
+  stem_to_diffuse: random
+  diffusion_input_mix_prob: 0.5  # 1.0 = always extracted audio, 0.0 = always clean audio, 0.5 = 50/50 mix
+
+  pre_trained_mixture_feature_extractor_model_config:
+    _target_: train_audio_simple.Audio_MSST_Model_simple
+    learning_rate: 1.0e-5
+    patience: 3
+    reduce_factor: 0.95
+
+    model_type: bs_roformer
+    dim: 384
+    depth: 8
+    stereo: true
+    num_stems: 4
+    time_transformer_depth: 1
+    freq_transformer_depth: 1
+    linear_transformer_depth: 0
+    freqs_per_bands: !!python/tuple
+      - 2
+      - 2
+      - 2
+      - 2
+      - 2
+      - 2
+      - 2
+      - 2
+      - 2
+      - 2
+      - 2
+      - 2
+      - 2
+      - 2
+      - 2
+      - 2
+      - 2
+      - 2
+      - 2
+      - 2
+      - 2
+      - 2
+      - 2
+      - 2
+      - 4
+      - 4
+      - 4
+      - 4
+      - 4
+      - 4
+      - 4
+      - 4
+      - 4
+      - 4
+      - 4
+      - 4
+      - 12
+      - 12
+      - 12
+      - 12
+      - 12
+      - 12
+      - 12
+      - 12
+      - 24
+      - 24
+      - 24
+      - 24
+      - 24
+      - 24
+      - 24
+      - 24
+      - 48
+      - 48
+      - 48
+      - 48
+      - 48
+      - 48
+      - 48
+      - 48
+      - 128
+      - 129
+    dim_head: 64
+    heads: 8
+    attn_dropout: 0.1
+    ff_dropout: 0.1
+    flash_attn: true
+    dim_freqs_in: 1025
+    stft_n_fft: 2048
+    stft_hop_length: 441
+    stft_win_length: 2048
+    stft_normalized: false
+    mask_estimator_depth: 2
+    multi_stft_resolution_loss_weight: 1.0
+    multi_stft_resolutions_window_sizes: !!python/tuple
+    - 4096
+    - 2048
+    - 1024
+    - 512
+    - 256
+    multi_stft_hop_size: 147
+    multi_stft_normalized: False
+    mlp_expansion_factor: 2
+    skip_connection: False
+  pre_trained_mixture_feature_extractor: lightning_logs/DiCoSe/Deterministic_model_MSST_bs_roformer/model.ckpt
+
+  # ── Diffusion (student) model architecture ──────────────────────────────────
+  # Same architecture as the teacher. EDMPrecond_MSST_CTM strips the lightning-
+  # module-level keys and passes the rest to AudioDiffusionModel_MSST.
+  use_context_time: true
+  model_type: bs_roformer_stems_in_out_stem_cond_random_stem
+  dim: 384
+  depth: 8
+  stereo: true
+  num_stems: 4
+  time_transformer_depth: 1
+  freq_transformer_depth: 1
+  linear_transformer_depth: 0
+  freqs_per_bands: !!python/tuple
+    - 2
+    - 2
+    - 2
+    - 2
+    - 2
+    - 2
+    - 2
+    - 2
+    - 2
+    - 2
+    - 2
+    - 2
+    - 2
+    - 2
+    - 2
+    - 2
+    - 2
+    - 2
+    - 2
+    - 2
+    - 2
+    - 2
+    - 2
+    - 2
+    - 4
+    - 4
+    - 4
+    - 4
+    - 4
+    - 4
+    - 4
+    - 4
+    - 4
+    - 4
+    - 4
+    - 4
+    - 12
+    - 12
+    - 12
+    - 12
+    - 12
+    - 12
+    - 12
+    - 12
+    - 24
+    - 24
+    - 24
+    - 24
+    - 24
+    - 24
+    - 24
+    - 24
+    - 48
+    - 48
+    - 48
+    - 48
+    - 48
+    - 48
+    - 48
+    - 48
+    - 128
+    - 129
+  dim_head: 64
+  heads: 8
+  attn_dropout: 0.1
+  ff_dropout: 0.1
+  flash_attn: true
+  dim_freqs_in: 1025
+  stft_n_fft: 2048
+  stft_hop_length: 441
+  stft_win_length: 2048
+  stft_normalized: false
+  mask_estimator_depth: 2
+  multi_stft_resolution_loss_weight: 1.0
+  multi_stft_resolutions_window_sizes: !!python/tuple
+  - 4096
+  - 2048
+  - 1024
+  - 512
+  - 256
+  multi_stft_hop_size: 147
+  multi_stft_normalized: False
+  mlp_expansion_factor: 2
+  skip_connection: False
+  use_mixture_feature_conditioning: true
+  use_torch_checkpoint: true
+  stft_adapter_type: conv2d
+  stft_adapter_hidden: 128
+  diffusion_sigma_data: 0.06
+  diffusion_dynamic_threshold: 0.0
+  loss_type: mse
+
+
+train_dataset:
+  _target_: main.msst.utils.dataset.MSSDataset
+  data_path: dataset/musdb18hq/train
+  metadata_path: dataset/musdb18hq/train_metadata.pkl
+  dataset_type: 1
+  config:
+    instruments:  ['drums', 'bass', "other", "vocals" ]
+    target_instrument: null
+    audio:
+      chunk_size: 485100
+      dim_f: 1024
+      dim_t: 801
+      hop_length: 441
+      n_fft: 2048
+      num_channels: 2
+      sample_rate: 44100
+      min_mean_abs: 0.000
+    augmentations:
+      enable: true
+      loudness: true
+      loudness_min: 0.5
+      loudness_max: 1.5
+      mixup: true
+      mixup_probs: !!python/tuple
+        - 0.2
+        - 0.02
+      mixup_loudness_min: 0.5
+      mixup_loudness_max: 1.5
+      all:
+        channel_shuffle: 0.5
+        random_inverse: 0.1
+        random_polarity: 0.5
+      vocals:
+          pitch_shift: 0.1
+          pitch_shift_min_semitones: -5
+          pitch_shift_max_semitones: 5
+          seven_band_parametric_eq: 0.1
+          seven_band_parametric_eq_min_gain_db: -9
+          seven_band_parametric_eq_max_gain_db: 9
+          tanh_distortion: 0.1
+          tanh_distortion_min: 0.1
+          tanh_distortion_max: 0.7
+      bass:
+        pitch_shift: 0.1
+        pitch_shift_min_semitones: -2
+        pitch_shift_max_semitones: 2
+        seven_band_parametric_eq: 0.1
+        seven_band_parametric_eq_min_gain_db: -3
+        seven_band_parametric_eq_max_gain_db: 6
+        tanh_distortion: 0.1
+        tanh_distortion_min: 0.1
+        tanh_distortion_max: 0.5
+      drums:
+        pitch_shift: 0.1
+        pitch_shift_min_semitones: -5
+        pitch_shift_max_semitones: 5
+        seven_band_parametric_eq: 0.1
+        seven_band_parametric_eq_min_gain_db: -9
+        seven_band_parametric_eq_max_gain_db: 9
+        tanh_distortion: 0.1
+        tanh_distortion_min: 0.1
+        tanh_distortion_max: 0.6
+      other:
+        pitch_shift: 0.1
+        pitch_shift_min_semitones: -4
+        pitch_shift_max_semitones: 4
+        gaussian_noise: 0.1
+        gaussian_noise_min_amplitude: 0.001
+        gaussian_noise_max_amplitude: 0.015
+        time_stretch: 0.1
+        time_stretch_min_rate: 0.8
+        time_stretch_max_rate: 1.25
+
+val_dataset:
+  _target_: main.data.MUSDB_Aug_Repitch_Tracks_Dataset_MSST
+  audio_files_dir: "dataset/musdb18hq/test" #_debug"
+  sr: 44100
+  channels: 2
+  min_duration: 12.0
+  max_duration: 640.0
+  aug_shift:
+  sample_length: 485100
+  stems:   ['drums', 'bass', 'other', 'vocals']
+  metadata: "metadata"
+  normalize: False
+  augment: False
+
+
+datamodule:
+  batch_size: 3
+  num_workers: 4
+  pin_memory: False
+  val_batch_size: 7
+
+
+audio_samples_logger:
+  _target_: main.audio_ctm.ClassCondSeparateTrackSampleLoggerCTM_MUSDB_MSST
+  num_items: 1
+  channels: 2
+  sampling_rate: 44100
+  length: 485100
+  clip_output: True
+  clip_denoised: False
+  stems: ['drums', 'bass', "other", "vocals"]
+
+  model_to_calculate_metrics: net
+  sampler_to_calculate_metrics: cm_multistep_cd
+  # run_museval: false
+  steps_to_calculate_metrics: 1
+  # steps_to_calculate_metrics: 2  # 2-step best
+
+  sigma_max_sampling: 0.003934
+  # sigma_max_sampling: 0.004391  # 2-step best
+  sigma_min_sampling: null
+  rho_sampling: null
+
+  log_deterministic: true
+  log_all: false
+
+
+
+callbacks:
+  rich_progress_bar:
+    _target_: pytorch_lightning.callbacks.RichProgressBar
+
+  model_summary:
+    _target_: pytorch_lightning.callbacks.RichModelSummary
+    max_depth: 1
+
+
+
+
+trainer:
+  accelerator: cuda
+  devices: [0, 1, 2]
+  precision: "16-mixed"
+  min_epochs: 0
+  max_epochs: 1000
+  max_steps: 600000
+  # accumulate_grad_batches: 2
+  enable_model_summary: False
+  log_every_n_steps: 10
+  # check_val_every_n_epoch: 1
+  val_check_interval:
+  limit_val_batches: 
+  limit_train_batches: 
+  strategy: auto
+  num_sanity_val_steps: 0
+
+resume_from_checkpoint: lightning_logs/DiCoSe/CD_MSST_bs_roformer/model.ckpt
+
+
+optim:
+    grad_clip: null
+    weight_decay: 0
+    lr: 1.e-5
+    betas: [0.9, 0.999]
+    eps: 1.e-8
+    amsgrad: False
+    optimizer: radam
+    warmup_epochs: 1
+
+diffusion:
+    preconditioning: cd   # ctm | cd
+
+    # cm_train_defaults
+    target_ema_mode: "fixed"
+    scale_mode: "fixed"
+    start_scales: 10
+    end_scales: 10
+    distill_steps_per_iter: 50000
+    teacher_model_path: lightning_logs/DiCoSe/diffusion_model_MSST_bs_roformer/model.ckpt
+    model_path:
+    training_mode: "cd"                   ## do not change this!!!
+    num_heun_step: 9
+    num_heun_step_random: True
+    loss_norm: "mse"
+    use_fp16: False
+    ema_rate: []
+    start_ema: 0.999
+
+    linear_probing: False
+    target_subtract: False
+
+    schedule_sampler: "uniform"
+    sigma_min: 0.0001
+    sigma_max: 0.5
+    sigma_data: 0.06
+    rho: 9
+
+    weight_schedule: uniform
+    weight_schedule_multiplier: 1.0
+    diffusion_weight_schedule: "karras_weight"
+    rescaling: False
+
+    # CTM hyperparams
+    consistency_weight: 1.0
+    time_continuous: False
+    heun_step_strategy: 'weighted'
+    heun_step_multiplier: 1.0
+    self_learn: False
+    self_learn_iterative: False
+    inner_parametrization: 'edm'
+    outer_parametrization: 'euler'
+    ctm_estimate_outer_type: 'target_model_sg'
+    ctm_estimate_inner_type: 'model'
+    ctm_target_matching: False
+    ctm_target_inner_type: 'target_model_sg'
+    sample_s_strategy: 'uniform'
+
+    save_png: False
+    save_period: 0
+
+    # DSM hyperparams
+    diffusion_training: True
+    apply_adaptive_weight: False
+    apply_adaptive_weight_for_audio: True
+    denoising_weight: 1.0
+    diffusion_mult: 0.7
+    diffusion_schedule_sampler: "halflognormal"
+    diffusion_training_frequency: 1.
+    p_mean: -3.0
+    p_std: 1.0
+
+    large_log: False

@@ -11,7 +11,7 @@ from torchmetrics.image.inception import InceptionScore
 # from sampler import multistep_consistency_sampling
 import os
 from torchmetrics.image.fid import FrechetInceptionDistance
-from ctm.utils import EMAAndScales_Initialiser, create_model_and_diffusion_audio
+from ctm.utils import EMAAndScales_Initialiser, create_model_and_diffusion_audio, create_model_and_diffusion_audio_msst
 from ctm.enc_dec_lib import load_feature_extractor
 from ctm.sample_util import karras_sample
 import torch.nn as nn
@@ -32,7 +32,7 @@ import json
 import math
 from main.model_simple import Audio_DM_Model_simple
 import soundfile as sf
-from main.module_base import ClassCondSeparateTrackSampleLogger
+from main.module_base import ClassCondSeparateTrackSampleLogger, ClassCondSeparateTrackSampleLogger_MUSDB_MSST_stems_in_out
 
 class CosineWarmupScheduler(optim.lr_scheduler._LRScheduler):
     def __init__(self, optimizer, warmup, max_iters):
@@ -418,12 +418,243 @@ class Audio_CTM_Model(pl.LightningModule):
     
     
     
-    
-    
-""" Callbacks """    
-    
-    
-    
+class Audio_MSST_CTM_Model(pl.LightningModule):
+    """
+    Consistency distillation (CD/CTM) training for BSRoformer-based MSST diffusion model.
+
+    Mirrors Audio_CTM_Model but uses:
+    - create_model_and_diffusion_audio_msst  (EDMPrecond_MSST_CTM) instead of UNet1d
+    - Audio_MSST_DM_Model-style data pipeline (4-D stems, mixture features, random-stem mode)
+    - Teacher checkpoint loaded from an Audio_MSST_DM_Model .ckpt (strict=False)
+    """
+
+    def __init__(self, cfg=None):
+        super().__init__()
+        self.cfg = cfg
+        self.save_hyperparameters()
+
+        assert cfg.diffusion.preconditioning in ('ctm', 'cd'), \
+            f"Unsupported preconditioning: {cfg.diffusion.preconditioning}"
+
+        self.ema_scale_fn = EMAAndScales_Initialiser(
+            target_ema_mode=cfg.diffusion.target_ema_mode,
+            start_ema=cfg.diffusion.start_ema,
+            scale_mode=cfg.diffusion.scale_mode,
+            start_scales=cfg.diffusion.start_scales,
+            end_scales=cfg.diffusion.end_scales,
+            total_steps=cfg.trainer.max_steps,
+            distill_steps_per_iter=cfg.diffusion.distill_steps_per_iter,
+        ).get_ema_and_scales
+
+        # ── Feature extractor (frozen pre-trained deterministic model) ──────────
+        from main.module_base import instantiate_from_config
+        self.diffusion_input_mix_prob = getattr(cfg.model, 'diffusion_input_mix_prob', 1.0)
+        self.stem_to_diffuse = getattr(cfg.model, 'stem_to_diffuse', None)
+        self.pre_trained_mixture_feature_extractor_path = getattr(cfg.model, 'pre_trained_mixture_feature_extractor', None)
+        pre_trained_cfg = getattr(cfg.model, 'pre_trained_mixture_feature_extractor_model_config', None)
+
+        if pre_trained_cfg is not None:
+            self.pre_trained_mixture_feature_extractor_model = instantiate_from_config(pre_trained_cfg)
+            print("\nLoading feature extractor from:", self.pre_trained_mixture_feature_extractor_path)
+            self.pre_trained_mixture_feature_extractor_model.load_state_dict(
+                torch.load(self.pre_trained_mixture_feature_extractor_path, map_location='cpu')['state_dict']
+            )
+            for param in self.pre_trained_mixture_feature_extractor_model.parameters():
+                param.requires_grad = False
+            self.pre_trained_mixture_feature_extractor_model.eval()
+        else:
+            self.pre_trained_mixture_feature_extractor_model = None
+
+        # ── Student model ────────────────────────────────────────────────────────
+        feature_extractor = load_feature_extractor(cfg.diffusion, eval=True)
+        self.net, self.diffusion = create_model_and_diffusion_audio_msst(cfg, feature_extractor=feature_extractor)
+
+        # ── Teacher model (loaded from diffusion checkpoint) ─────────────────────
+        if cfg.diffusion.teacher_model_path is not None and not cfg.diffusion.self_learn:
+            print(f"Loading teacher model from {cfg.diffusion.teacher_model_path}")
+            self.teacher_model, _ = create_model_and_diffusion_audio_msst(cfg, teacher=True)
+            ckpt = torch.load(cfg.diffusion.teacher_model_path, map_location='cpu')
+            self.teacher_model.load_state_dict(ckpt['state_dict'], strict=False)
+            self.teacher_model.eval()
+            self.copy_teacher_params_to_model(cfg.diffusion)
+            self.teacher_model.requires_grad_(False)
+            if cfg.diffusion.use_fp16:
+                self.teacher_model.convert_to_fp16()
+        else:
+            self.teacher_model = None
+
+        self.diffusion.teacher_model = self.teacher_model
+
+        # ── Target model (EMA copy of student) ──────────────────────────────────
+        self.target_model, _ = create_model_and_diffusion_audio_msst(cfg)
+        for param in self.target_model.parameters():
+            param.requires_grad = False
+        self.target_model.load_state_dict(copy.deepcopy(self.net.state_dict()))
+
+        # ── Optional additional EMA models ───────────────────────────────────────
+        self.ema_models = nn.ModuleList()
+        for ema_rate in cfg.diffusion.ema_rate:
+            ema_model, _ = create_model_and_diffusion_audio_msst(cfg)
+            for param in ema_model.parameters():
+                param.requires_grad = False
+            ema_model.load_state_dict(copy.deepcopy(self.net.state_dict()))
+            ema_model.eval()
+            self.ema_models.append(ema_model)
+        self.ema_models.eval()
+
+    # ── Param copy helpers ────────────────────────────────────────────────────────
+
+    def copy_teacher_params_to_model(self, args):
+        def filter_(dst_name):
+            dst_ = dst_name.split('.')
+            for idx, name in enumerate(dst_):
+                if '_train' in name:
+                    dst_[idx] = ''.join(name.split('_train'))
+            return '.'.join(dst_)
+
+        for dst_name, dst in self.net.named_parameters():
+            for src_name, src in self.teacher_model.named_parameters():
+                if dst_name in ['.'.join(src_name.split('.')[1:]), src_name]:
+                    dst.data.copy_(src.data)
+                    if args.linear_probing:
+                        dst.requires_grad = False
+                    break
+                if args.linear_probing:
+                    if filter_(dst_name) in ['.'.join(src_name.split('.')[1:]), src_name]:
+                        dst.data.copy_(src.data)
+                        break
+
+    # ── Data pipeline (mirrors Audio_MSST_DM_Model.get_input) ────────────────────
+
+    def get_input(self, batch):
+        waveforms, mixtures = batch[0], batch[1]
+        batch_size, num_stems, c, t = waveforms.shape
+        mixture = mixtures
+
+        with torch.no_grad():
+            with torch.cuda.amp.autocast(enabled=True):
+                mixture_features_channels_list = self.pre_trained_mixture_feature_extractor_model.model.unet.get_feature(mixture)
+                separated_tracks = mixture_features_channels_list[-1]
+
+        if self.training and self.stem_to_diffuse == 'random':
+            stem_idx = torch.randint(0, num_stems, (1,)).item()
+            waveforms = waveforms[:, stem_idx:stem_idx + 1, :, :]
+            separated_track_to_diffuse = separated_tracks[:, stem_idx:stem_idx + 1, :, :]
+            features = stem_idx
+        elif self.stem_to_diffuse is not None and self.stem_to_diffuse != 'random':
+            idx = int(self.stem_to_diffuse)
+            waveforms = waveforms[:, idx, :, :]
+            separated_tracks_all = separated_tracks
+            separated_track_to_diffuse = separated_tracks_all[:, idx, :, :]
+            features = None
+        else:
+            # All-stems mode or eval
+            separated_track_to_diffuse = separated_tracks
+            features = None
+
+        return waveforms, features, mixture_features_channels_list, separated_track_to_diffuse
+
+    def apply_training_mixing(self, waveforms, extracted_waveforms):
+        if extracted_waveforms is not None:
+            batch_size = waveforms.shape[0]
+            # Create binary mask with shape [B, 1, 1, ...] matching waveforms dimensions
+            mask_shape = (batch_size,) + (1,) * (waveforms.ndim - 1)
+            mask = (torch.rand(mask_shape, device=waveforms.device) < self.diffusion_input_mix_prob).float()
+
+            # Mix: waveforms = mask * extracted + (1 - mask) * clean
+            waveforms = mask * extracted_waveforms + (1 - mask) * waveforms
+
+        return waveforms
+
+    # ── Loss ─────────────────────────────────────────────────────────────────────
+
+    def calculate_loss(self, waveforms, features, mixture_features_channels_list, split='train', target=None):
+        num_heun_step = [self.diffusion.get_num_heun_step(num_heun_step=self.cfg.diffusion.num_heun_step)]
+        diffusion_training_ = [np.random.rand() < self.cfg.diffusion.diffusion_training_frequency]
+
+        model_kwargs = {
+            'features': features,
+            'channels_list': None,
+            'embedding': None,
+            'mixture_features_channels_list': mixture_features_channels_list,
+        }
+
+        if split == 'val':
+            orig_adaptive = self.diffusion.args.apply_adaptive_weight
+            self.diffusion.args.apply_adaptive_weight = False
+
+        losses = self.diffusion.ctm_losses(
+            step=self.global_step,
+            model=self.net,
+            x_start=waveforms,
+            model_kwargs=model_kwargs,
+            target_model=self.target_model,
+            discriminator=None,
+            init_step=0,
+            ctm=self.cfg.diffusion.training_mode == 'ctm',
+            num_heun_step=num_heun_step[0],
+            gan_num_heun_step=-1,
+            diffusion_training_=diffusion_training_[0],
+            gan_training_=False,
+            target=target if target is not None else waveforms,
+        )
+
+        if split == 'val':
+            self.diffusion.args.apply_adaptive_weight = orig_adaptive
+
+        if 'consistency_loss' in losses:
+            loss = self.cfg.diffusion.consistency_weight * losses['consistency_loss'].mean()
+            if 'denoising_loss' in losses:
+                loss = loss + self.cfg.diffusion.denoising_weight * losses['denoising_loss'].mean()
+        elif 'denoising_loss' in losses:
+            loss = losses['denoising_loss'].mean()
+
+        for key, values in losses.items():
+            self.log(f'{split}/{key} mean', values.mean().item(), sync_dist=True)
+            self.log(f'{split}/{key} std', values.std().item(), sync_dist=True)
+
+        return loss
+
+    # ── Training / validation ─────────────────────────────────────────────────────
+
+    def training_step(self, batch, _):
+        waveforms, features, mixture_features_channels_list, separated_track_to_diffuse = self.get_input(batch)
+        clean_target = waveforms
+        x_start = self.apply_training_mixing(waveforms, separated_track_to_diffuse)
+        return self.calculate_loss(x_start, features, mixture_features_channels_list, split='train', target=clean_target)
+
+    def validation_step(self, batch, batch_idx):
+        return
+
+    def on_before_zero_grad(self, optimizer):
+        target_ema, _ = self.ema_scale_fn(self.global_step)
+        self._update_ema(self.target_model, self.net, target_ema)
+        for ema_model, ema_rate in zip(self.ema_models, self.cfg.diffusion.ema_rate):
+            self._update_ema(ema_model, self.net, ema_rate)
+
+    def _update_ema(self, ema_model, model, decay):
+        for ema_param, param in zip(ema_model.parameters(), model.parameters()):
+            ema_param.data.mul_(decay).add_(param.data, alpha=1 - decay)
+
+    def configure_optimizers(self):
+        cfg = self.cfg.optim
+        if cfg.optimizer == 'radam':
+            optimizer = optim.RAdam(self.net.parameters(), lr=cfg.lr, weight_decay=cfg.weight_decay, betas=cfg.betas, eps=cfg.eps)
+        elif cfg.optimizer == 'adam':
+            optimizer = optim.Adam(self.net.parameters(), lr=cfg.lr, weight_decay=cfg.weight_decay, betas=cfg.betas, eps=cfg.eps)
+        elif cfg.optimizer == 'adamw':
+            optimizer = optim.AdamW(self.net.parameters(), lr=cfg.lr, weight_decay=cfg.weight_decay, betas=cfg.betas, eps=cfg.eps)
+        elif cfg.optimizer == 'rmsprop':
+            optimizer = optim.RMSprop(self.net.parameters(), lr=cfg.lr)
+        elif cfg.optimizer == 'sgd':
+            optimizer = optim.SGD(self.net.parameters(), lr=cfg.lr)
+        return optimizer
+
+
+""" Callbacks """
+
+
+
 def get_wandb_logger(trainer: Trainer) -> Optional[WandbLogger]:
     """Safely get Weights&Biases logger from Trainer."""
 
@@ -558,3 +789,116 @@ class ClassCondSeparateTrackSampleLoggerCTM(ClassCondSeparateTrackSampleLogger):
         mixture_audios = batch[2].sum(1)[:, 0, :].detach().cpu().numpy()[..., np.newaxis]
 
         return original_samples, generated_samples, mixture_audios
+
+
+class ClassCondSeparateTrackSampleLoggerCTM_MUSDB_MSST(ClassCondSeparateTrackSampleLogger_MUSDB_MSST_stems_in_out):
+    """
+    Validation logger for Audio_MSST_CTM_Model (BSRoformer-based CD/CTM training).
+
+    Inherits all metrics, multiprocessing museval, limit_val_batches-aware
+    on_validation_batch_start from ClassCondSeparateTrackSampleLogger_MUSDB_MSST_stems_in_out.
+    Only generate_sample is overridden to use karras_sample instead of model.sample.
+    """
+
+    def __init__(
+        self,
+        num_items: int,
+        channels: int,
+        sampling_rate: int,
+        length: int,
+        stems: List[str],
+        clip_output: bool = True,
+        clip_denoised: bool = False,
+        log_deterministic: bool = False,
+        log_all: bool = False,
+        model_to_calculate_metrics: str = "net",
+        sampler_to_calculate_metrics: str = "onestep",
+        steps_to_calculate_metrics: int = 1,
+        sigma_max_sampling: Optional[float] = None,
+        sigma_min_sampling: Optional[float] = None,
+        rho_sampling: Optional[float] = None,
+        run_museval: bool = True,
+    ) -> None:
+        super().__init__(
+            num_items=num_items,
+            channels=channels,
+            sampling_rate=sampling_rate,
+            length=length,
+            sampling_steps=steps_to_calculate_metrics,
+            diffusion_schedule=None,
+            diffusion_sampler=None,
+            stems=stems,
+            log_deterministic=log_deterministic,
+            log_all=log_all,
+            run_museval=run_museval,
+        )
+        self.clip_output = clip_output
+        self.clip_denoised = clip_denoised
+        self.model_to_calculate_metrics = model_to_calculate_metrics
+        self.sampler_to_calculate_metrics = sampler_to_calculate_metrics
+        self.steps_to_calculate_metrics = steps_to_calculate_metrics
+        self.sigma_max_sampling = sigma_max_sampling
+        self.sigma_min_sampling = sigma_min_sampling
+        self.rho_sampling = rho_sampling
+
+    @torch.no_grad()
+    def generate_sample(self, trainer, pl_module, batch):
+        waveforms, _, mixture_features_channels_list, separated_track_to_diffuse = pl_module.get_input(batch)
+        batch_size = waveforms.shape[0]
+        num_stems = len(self.stems)
+        model = getattr(pl_module, self.model_to_calculate_metrics)
+
+        model_kwargs = {
+            'features': None,
+            'channels_list': None,
+            'embedding': None,
+            'mixture_features_channels_list': list(mixture_features_channels_list),
+        }
+
+        with torch.cuda.amp.autocast(enabled=trainer.precision == "16-mixed"):
+            sample = karras_sample(
+                diffusion=pl_module.diffusion,
+                model=model,
+                shape=(batch_size, num_stems, self.channels, self.length),
+                steps=self.steps_to_calculate_metrics,
+                model_kwargs=model_kwargs,
+                device=pl_module.device,
+                clip_denoised=self.clip_denoised,
+                sampler=self.sampler_to_calculate_metrics,
+                progress=True,
+                generator=None,
+                teacher=False,
+                ctm=pl_module.cfg.diffusion.training_mode == 'ctm',
+                x_T=None,  # x_det is NOT needed here — it is already inside mixture_features_channels_list[-1]
+                clip_output=self.clip_output,
+                sigma_min=self.sigma_min_sampling if self.sigma_min_sampling is not None else pl_module.cfg.diffusion.sigma_min,
+                sigma_max=self.sigma_max_sampling if self.sigma_max_sampling is not None else pl_module.cfg.diffusion.sigma_max,
+                rho=self.rho_sampling if self.rho_sampling is not None else pl_module.cfg.diffusion.rho,
+                train=False,
+            )
+
+        sample = sample.clamp(-1.0, 1.0)
+        samples_np = rearrange(sample, "b s c t -> b s t c").detach().cpu().numpy()
+
+        generated_samples = {stem: [] for stem in self.stems}
+        for i, stem in enumerate(self.stems):
+            for idx in range(batch_size):
+                generated_samples[stem].append(samples_np[idx, i])
+
+        original_samples = {stem: [] for stem in self.stems}
+        for i, stem in enumerate(self.stems):
+            stem_data = rearrange(waveforms[:, i], "b c t -> b t c").detach().cpu().numpy()
+            for idx in range(batch_size):
+                original_samples[stem].append(stem_data[idx])
+
+        deterministic_samples = None
+        if self.log_deterministic:
+            deterministic_samples = {stem: [] for stem in self.stems}
+            for i, stem in enumerate(self.stems):
+                stem_data = rearrange(separated_track_to_diffuse[:, i], "b c t -> b t c").detach().cpu().numpy()
+                for idx in range(batch_size):
+                    deterministic_samples[stem].append(stem_data[idx])
+
+        mixture_audios = rearrange(batch[1], "b c t -> b t c").detach().cpu().numpy()
+
+        return original_samples, generated_samples, mixture_audios, deterministic_samples

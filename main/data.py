@@ -8,13 +8,18 @@ from abc import ABC
 from pathlib import Path
 from typing import *
 
-# import av
+import av
 import librosa
 import numpy as np
 import torch
 import torchaudio
 from torch.utils.data import Dataset
 import random
+
+from .musdb_aug_repitch_tools.wav import build_metadata, Wavset
+from .musdb_aug_repitch_tools.repitch import RepitchedWrapper
+from .musdb_aug_repitch_tools import augmentations
+import json
 
 
 def get_duration_sec(file, cache=False):
@@ -23,13 +28,13 @@ def get_duration_sec(file, cache=False):
             duration = float(f.readline().strip("\n"))
         return duration
     except:
-        pass
-        # container = av.open(file)
-        # audio = container.streams.get(audio=0)[0]
-        # duration = audio.duration * float(audio.time_base)
-        # if cache:
-        #     with open(file + ".dur", "w") as f:
-        #         f.write(str(duration) + "\n")
+        # pass
+        container = av.open(file)
+        audio = container.streams.get(audio=0)[0]
+        duration = audio.duration * float(audio.time_base)
+        if cache:
+            with open(file + ".dur", "w") as f:
+                f.write(str(duration) + "\n")
         return duration
 
 
@@ -593,3 +598,106 @@ class ChunkedSupervisedDataset_for_extraction(ChunkedSupervisedDataset):
         one_hot_vector[stem_index] = 1.0
 
         return selected_stem, one_hot_vector, stacked_tracks, self.get_chunk_track(item)
+
+
+class MUSDB_Aug_Repitch_Tracks_Dataset(Dataset):
+    def __init__(self, sr, channels, min_duration, max_duration, aug_shift, sample_length, audio_files_dir, stems, augment=None, metadata="metadata", normalize = True):
+        super().__init__()
+
+        torchaudio.set_audio_backend("soundfile") # this is nessesary for some reason
+
+        self.sr = sr
+        self.channels = channels
+        self.min_duration = min_duration or math.ceil(sample_length / sr)
+        self.max_duration = max_duration or math.inf
+        self.sample_length = sample_length
+        self.audio_files_dir = Path(audio_files_dir)  # Ensure it's a Path object
+        self.stems = stems
+        self.augment = augment
+        self.aug_shift = aug_shift
+
+        # Extract the last part of audio_files_dir (e.g., "train", "test", "valid")
+        dataset_name = self.audio_files_dir.name
+
+        # Define metadata directory at the same level as audio_files_dir
+        metadata_dir = self.audio_files_dir.parent / metadata
+        metadata_dir.mkdir(exist_ok=True, parents=True)  # Ensure it exists
+
+        # Define metadata file path
+        metadata_file = metadata_dir / f"{dataset_name}.json"
+
+        self.metadata_file = metadata_file  # Store it for later use
+
+        print(f"Metadata file will be stored at: {self.metadata_file}")
+
+        if not metadata_file.is_file():
+            metadata_file.parent.mkdir(exist_ok=True, parents=True)
+            metadata = build_metadata(self.audio_files_dir, self.stems)
+            json.dump(metadata, open(metadata_file, "w"))
+
+        metadata = json.load(open(metadata_file))
+
+        # Ensure self.aug_shift and augment.repitch.max_tempo are defined
+        aug_shift = self.aug_shift if self.aug_shift is not None else 0
+        max_tempo = getattr(self.augment, "repitch", None)
+        max_tempo = max_tempo.max_tempo if max_tempo and hasattr(max_tempo, "max_tempo") else 0
+
+        # Compute segment_to_take cleanly
+        segment_to_take = (self.sample_length / self.sr + aug_shift) * (1 + 0.01 * max_tempo)
+
+        self.dataset = Wavset(self.audio_files_dir, metadata, self.stems,
+                        segment=segment_to_take, shift=self.aug_shift,
+                        samplerate=self.sr, channels=self.channels,
+                        normalize=normalize)
+
+        if self.augment:
+            if self.augment.repitch.proba:
+                vocals = []
+                if 'vocals' in self.stems:
+                    vocals.append(self.stems.index('vocals'))
+                else:
+                    print('No vocal source found')
+                if self.augment.repitch.proba:
+                    self.dataset = RepitchedWrapper(self.dataset, vocals=vocals, **vars(self.augment.repitch))
+
+            # data augment
+            augments = [augmentations.StackBatch()]  # First, apply stacking
+            augments.append(augmentations.Shift(shift=int(self.sr * self.aug_shift), same=self.augment.shift_same))
+
+            if self.augment.flip:
+                augments += [augmentations.FlipChannels(), augmentations.FlipSign()]
+            for aug in ['scale', 'remix']:
+                kw = getattr(self.augment, aug)
+                if kw.proba:
+                    augments.append(getattr(augmentations, aug.capitalize())(**vars(kw)))
+            self.transforms = torch.nn.Sequential(*augments)
+
+    def __len__(self):
+        return len(self.dataset)
+
+    def __getitem__(self, item):
+
+        stem_data = self.dataset.__getitem__(item)
+
+        # Randomly select a stem
+        stem_index = random.randint(0, len(self.stems) - 1)
+        selected_stem = stem_data[stem_index]
+
+        # Create a one-hot vector for the class index
+        one_hot_vector = np.zeros(len(self.stems), dtype=np.float32)
+        one_hot_vector[stem_index] = 1.0
+
+        return selected_stem, torch.from_numpy(one_hot_vector), stem_data
+
+
+class MUSDB_Aug_Repitch_Tracks_Dataset_MSST(MUSDB_Aug_Repitch_Tracks_Dataset):
+    """Subclass for MSST format - returns (stems, mixture, track_name)."""
+
+    def __getitem__(self, item):
+        stem_data = self.dataset.__getitem__(item)
+        track_name = self.dataset.get_track_name(item)
+
+        # Sum all stems to create mixture
+        mix = stem_data.sum(dim=0)  # Sum across stem dimension
+
+        return stem_data, mix, track_name

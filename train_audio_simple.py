@@ -5,7 +5,7 @@ import argparse
 import importlib
 import audio_diffusion_pytorch_
 
-from main.module_base import Model, DatamoduleWithValidation, MultiSourceSampleLogger, ClassCondSeparateTrackSampleLogger, ClassCondSeparateTrackSampleLogger_simple
+from main.module_base import Model, DatamoduleWithValidation, MultiSourceSampleLogger, ClassCondSeparateTrackSampleLogger, ClassCondSeparateTrackSampleLogger_simple, ClassCondSeparateTrackSampleLogger_simple_MSST
 from main.data import MultiSourceDataset
 import pytorch_lightning as pl
 import click
@@ -20,7 +20,7 @@ from audio_diffusion_pytorch_.modules import UNet1d
 import torch.nn.functional as F
 from einops import rearrange, reduce
 
-from main.model_simple import Audio_DM_Model_simple
+from main.model_simple import Audio_DM_Model_simple, Audio_MSST_Model_simple
 
 
 @rank_zero_only

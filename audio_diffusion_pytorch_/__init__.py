@@ -16,6 +16,7 @@ from .model import (
     AudioDiffusionAutoencoder,
     AudioDiffusionConditional,
     AudioDiffusionModel,
+    AudioDiffusionModel_MSST,
     AudioDiffusionUpsampler,
     DiffusionAutoencoder1d,
     DiffusionUpsampler1d,

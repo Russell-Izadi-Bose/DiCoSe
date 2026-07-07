@@ -5,7 +5,7 @@ import audio_diffusion_pytorch_
 
 from main.module_base import Model, DatamoduleWithValidation, MultiSourceSampleLogger
 from main.data import MultiSourceDataset
-from main.audio_ctm import Audio_CTM_Model
+from main.audio_ctm import Audio_CTM_Model, Audio_MSST_CTM_Model
 import pytorch_lightning as pl
 import click
 import os
@@ -248,9 +248,10 @@ def main():
     ckpt_callback = ModelCheckpoint(
         dirpath=checkpoint_path,
         save_top_k=1,
-        monitor="val_loss",
+        monitor="sdr_avg",
+        mode="max",
         save_last=True,
-        filename='{epoch}-{val_loss:.4f}',
+        filename='{epoch}-{sdr_avg:.4f}',
         every_n_train_steps=None
     )
 
@@ -259,7 +260,11 @@ def main():
     # Init Model
     # diffusion_sigma_distribution = instantiate_from_config(cfg.diffusion_sigma_distribution)
     # model = instantiate_from_config(cfg.model, diffusion_sigma_distribution = diffusion_sigma_distribution)
-    model = Audio_CTM_Model(cfg)
+    _target = vars(cfg.model).pop('_target_', None)
+    if _target == 'main.audio_ctm.Audio_MSST_CTM_Model':
+        model = Audio_MSST_CTM_Model(cfg)
+    else:
+        model = Audio_CTM_Model(cfg)
 
     # init datasets
     train_dataset = instantiate_from_config(cfg.train_dataset)

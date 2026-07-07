@@ -1024,3 +1024,88 @@ class EDMPrecond_Audio_CTM(torch.nn.Module):
 
     def convert_to_fp32(self):
         pass
+
+
+class EDMPrecond_MSST_CTM(torch.nn.Module):
+    """
+    EDM preconditioning wrapper for BSRoformer-based MSST diffusion model.
+    Used for consistency distillation (CD/CTM) training.
+
+    Unlike EDMPrecond_Audio_CTM which wraps UNet1d via UnetWrapper + globals(),
+    this class directly instantiates AudioDiffusionModel_MSST and calls its
+    underlying BSRoformer (self.model.unet) for denoised predictions,
+    bypassing the Diffusion loss wrapper not needed for CTM.
+    """
+
+    def __init__(
+        self,
+        cfg,
+        sigma_min: float = 0.0,
+        sigma_max: float = float('inf'),
+        sigma_data: float = 0.5,
+        use_fp16: bool = False,
+        teacher: bool = False,
+        training_mode: str = '',
+        linear_probing: bool = False,
+        **kwargs,
+    ):
+        super().__init__()
+        self.sigma_min = sigma_min
+        self.sigma_max = sigma_max
+        self.sigma_data = sigma_data
+        self.use_fp16 = use_fp16
+        self.teacher = teacher
+
+        from audio_diffusion_pytorch_ import LogNormalDistribution
+        from audio_diffusion_pytorch_.model import AudioDiffusionModel_MSST
+
+        # Strip keys handled at the LightningModule level, not part of model architecture.
+        _strip = {
+            'class_cond', 'separation',
+            'pre_trained_mixture_feature_extractor',
+            'pre_trained_mixture_feature_extractor_model_config',
+            'mixture_features_channels',
+            'stem_to_diffuse',
+            'diffusion_input_mix_prob',
+        }
+        model_kwargs = {k: v for k, v in vars(cfg).items() if k not in _strip}
+
+        # Model1d (parent of AudioDiffusionModel_MSST) requires diffusion_sigma_distribution.
+        # CTM never uses the internal diffusion loss, so a placeholder is fine.
+        if 'diffusion_sigma_distribution' not in model_kwargs:
+            model_kwargs['diffusion_sigma_distribution'] = LogNormalDistribution(mean=-3.0, std=1.0)
+
+        self.model = AudioDiffusionModel_MSST(**model_kwargs)
+
+    def unrescaling_t(self, rescaled_t):
+        return torch.exp(rescaled_t / 250.) - 1e-44
+
+    def forward(self, rescaled_x, rescaled_t, s=None, teacher=False, **model_kwargs):
+        dtype = torch.float16 if self.use_fp16 and rescaled_x.device.type == 'cuda' else torch.float32
+
+        if self.teacher:
+            sigma = self.unrescaling_t(rescaled_t)
+            sigma = sigma.log() / 4
+            F_x = self.model.unet(rescaled_x.to(dtype), sigma.flatten(), **model_kwargs)
+        else:
+            t = self.unrescaling_t(rescaled_t)
+            t = t.log() / 4
+            if s is not None:
+                s = self.unrescaling_t(s)
+                s = s.log() / 4
+            F_x = self.model.unet(
+                rescaled_x.to(dtype),
+                t.flatten(),
+                None if s is None else s.flatten(),
+                **model_kwargs,
+            )
+        return F_x
+
+    def round_sigma(self, sigma):
+        return torch.as_tensor(sigma)
+
+    def convert_to_fp16(self):
+        pass
+
+    def convert_to_fp32(self):
+        pass

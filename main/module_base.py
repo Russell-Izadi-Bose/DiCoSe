@@ -4,7 +4,7 @@ import numpy as np
 import pytorch_lightning as pl
 import torch
 import wandb
-from audio_diffusion_pytorch_ import AudioDiffusionModel, AudioDiffusionConditional, Sampler, Schedule
+from audio_diffusion_pytorch_ import AudioDiffusionModel, AudioDiffusionConditional, Sampler, Schedule, AudioDiffusionModel_MSST
 from einops import rearrange
 from pytorch_lightning import Callback, Trainer
 from pytorch_lightning.loggers import WandbLogger #LoggerCollection, WandbLogger
@@ -249,7 +249,395 @@ class Audio_DM_Model(pl.LightningModule):
         self.log("valid_loss", loss, sync_dist=True)
         return loss
 
+import importlib
+import argparse
 
+def instantiate_from_config(config, **kwargs):
+    if isinstance(config, argparse.Namespace):
+        config = vars(config)
+
+    module_path, class_name = config['_target_'].rsplit('.', 1)
+    module = importlib.import_module(module_path)
+    cls = getattr(module, class_name)
+    
+    # Remove _target_ from the config dictionary and instantiate the object
+    config_dict = {k: v for k, v in config.items() if k != '_target_'}
+    return cls(**config_dict, **kwargs)
+
+class Audio_MSST_DM_Model(pl.LightningModule):
+    def __init__(
+        self, learning_rate: float, beta1: float, beta2: float, *args, **kwargs
+    ):
+        super().__init__()
+        self.save_hyperparameters()
+        """
+        MSST-based deterministic model that inherits from Audio_DM_Model.
+        For now, it simply inherits all functionality from the parent class.
+        """
+
+        # Note: The following lines are already handled by parent class, but keeping for compatibility
+        self.learning_rate = learning_rate
+        self.beta1 = beta1
+        self.beta2 = beta2
+
+        self.diffusion_input_mix_prob = kwargs.pop('diffusion_input_mix_prob', 1.0)  # 1.0 = always extracted, 0.0 = always clean, 0.5 = 50/50 mix
+
+        # Stem selection for diffusion (integer index: 0=drums, 1=bass, 2=other, 3=vocals, or "random")
+        self.stem_to_diffuse = kwargs.pop('stem_to_diffuse', None)
+        if self.stem_to_diffuse == "random":
+            print(f"\n🎵 Diffusion will use random stem per training step")
+        elif self.stem_to_diffuse is not None:
+            print(f"\n🎵 Diffusion will be applied to stem index: {self.stem_to_diffuse}")
+
+        self.pre_trained_mixture_feature_extractor_model_config = kwargs.pop('pre_trained_mixture_feature_extractor_model_config', None)
+        self.pre_trained_mixture_feature_extractor = kwargs.pop('pre_trained_mixture_feature_extractor', None)
+        self.pretrained_diffusion_checkpoint = kwargs.pop('pretrained_diffusion_checkpoint', None)
+
+        if self.pre_trained_mixture_feature_extractor_model_config is not None:
+            # Create a copy of kwargs
+
+            # creating models for feature extraction
+            self.pre_trained_mixture_feature_extractor_model = instantiate_from_config(self.pre_trained_mixture_feature_extractor_model_config)
+
+            # loading pre_trained models from checkpoint
+            print("\nloading pre_trained model for feature extraction from checkpoint:", self.pre_trained_mixture_feature_extractor)
+            self.pre_trained_mixture_feature_extractor_model.load_state_dict(torch.load(self.pre_trained_mixture_feature_extractor, map_location="cpu")["state_dict"])
+
+            # Freeze parameters and set to eval mode
+            for param in self.pre_trained_mixture_feature_extractor_model.parameters():
+                param.requires_grad = False
+            self.pre_trained_mixture_feature_extractor_model.eval()
+
+
+
+        diffusion_model_config = vars(kwargs.pop('diffusion_model_config', None))
+        if diffusion_model_config['model_type'] == 'UNet1DModel':
+            # Pass the diffusion model config to the AudioDiffusionModel
+            self.model = AudioDiffusionModel(*args, **{**kwargs, **diffusion_model_config})
+        else:
+            self.model = AudioDiffusionModel_MSST(*args, **{**kwargs, **diffusion_model_config})
+
+        # Load pretrained weights if checkpoint path is provided
+        if self.pretrained_diffusion_checkpoint is not None:
+            self.load_pretrained_weights(
+                checkpoint_path=self.pretrained_diffusion_checkpoint,
+                stem_to_diffuse=self.stem_to_diffuse
+            )
+
+        print()
+
+    def load_pretrained_weights(self, checkpoint_path: str, stem_to_diffuse: int = None):
+        """
+        Load compatible weights from pre-trained deterministic model into diffusion model.
+
+        Args:
+            checkpoint_path: Path to pre-trained checkpoint
+            stem_to_diffuse: Which stem's mask_estimator to load (0=drums, 1=bass, 2=other, 3=vocals)
+                           If None, uses self.stem_to_diffuse
+        """
+        if stem_to_diffuse is None:
+            stem_to_diffuse = self.stem_to_diffuse
+
+        print(f"\n{'='*80}")
+        print(f"Loading compatible weights from: {checkpoint_path}")
+        print(f"Target stem index: {stem_to_diffuse if stem_to_diffuse is not None else 'ALL (stems-in-stems-out mode)'}")
+        print(f"{'='*80}\n")
+
+        # Load checkpoint
+        checkpoint = torch.load(checkpoint_path, map_location="cpu")
+        pretrained_state_dict = checkpoint["state_dict"]
+
+        # Get current model state dict
+        current_state_dict = self.model.state_dict()
+
+        # Track transfer statistics
+        transferred_keys = []
+        skipped_diffusion_keys = []
+        missing_in_pretrained = []
+
+        # Create mapping for compatible weights
+        compatible_state_dict = {}
+
+        for key in current_state_dict.keys():
+            # Skip diffusion-specific modules
+            if any(pattern in key for pattern in ['unet.to_time.', 'unet.to_mapping.', '.to_scale_shift.', 'unet.stem_embedding.']):
+                skipped_diffusion_keys.append(key)
+                continue
+
+            # Handle mask_estimators remapping for single-stem mode only
+            # In single-stem mode: mask_estimators.0 <- mask_estimators[stem_to_diffuse]
+            # In all-stems mode (stem_to_diffuse is None): load all mask_estimators directly
+            if stem_to_diffuse is not None and key.startswith('unet.mask_estimators.0.'):
+                pretrained_key = key.replace('unet.mask_estimators.0.', f'model.unet.mask_estimators.{stem_to_diffuse}.')
+                if pretrained_key in pretrained_state_dict:
+                    compatible_state_dict[key] = pretrained_state_dict[pretrained_key]
+                    transferred_keys.append(f"{pretrained_key} -> {key}")
+                else:
+                    missing_in_pretrained.append(key)
+                continue
+
+            # Standard mapping: add 'model.' prefix for other weights
+            pretrained_key = f'model.{key}'
+            if pretrained_key in pretrained_state_dict:
+                compatible_state_dict[key] = pretrained_state_dict[pretrained_key]
+                transferred_keys.append(key)
+            else:
+                missing_in_pretrained.append(key)
+
+        # Load compatible weights
+        self.model.load_state_dict(compatible_state_dict, strict=False)
+
+        # Print summary
+        print(f"✅ Transferred {len(transferred_keys)} compatible weights:")
+        print(f"   - band_split modules: {len([k for k in transferred_keys if 'band_split' in k])}")
+        print(f"   - layer modules: {len([k for k in transferred_keys if 'layers' in k])}")
+        print(f"   - final_norm: {len([k for k in transferred_keys if 'final_norm' in k])}")
+        if stem_to_diffuse is not None:
+            print(f"   - mask_estimators[{stem_to_diffuse}] -> mask_estimators.0: {len([k for k in transferred_keys if 'mask_estimators' in k])}")
+        else:
+            print(f"   - mask_estimators (all): {len([k for k in transferred_keys if 'mask_estimators' in k])}")
+
+        print(f"\n🔧 Kept randomly initialized ({len(skipped_diffusion_keys)} diffusion-specific modules):")
+        print(f"   - to_time: {len([k for k in skipped_diffusion_keys if 'to_time' in k])}")
+        print(f"   - to_mapping: {len([k for k in skipped_diffusion_keys if 'to_mapping' in k])}")
+        print(f"   - to_scale_shift: {len([k for k in skipped_diffusion_keys if 'to_scale_shift' in k])}")
+
+        if missing_in_pretrained:
+            print(f"\n⚠️  Warning: {len(missing_in_pretrained)} keys not found in pretrained checkpoint")
+            if len(missing_in_pretrained) <= 10:
+                for key in missing_in_pretrained:
+                    print(f"   - {key}")
+
+        print(f"\n{'='*80}")
+        print(f"Weight loading complete!")
+        print(f"{'='*80}\n")
+
+    @property
+    def device(self):
+        return next(self.model.parameters()).device
+
+    def configure_optimizers(self):
+        optimizer = torch.optim.Adam(
+            list(self.parameters()),
+            lr=self.learning_rate,
+            betas=(self.beta1, self.beta2),
+        )
+        return optimizer
+
+    def apply_training_mixing(self, waveforms, extracted_waveforms):
+        """
+        Apply random mixing between clean target waveforms and extracted waveforms.
+        Used only during training to help the model learn to refine predictions.
+
+        Args:
+            waveforms: Clean target waveforms
+            extracted_waveforms: Waveforms extracted from pre-trained model
+
+        Returns:
+            Mixed waveforms based on diffusion_input_mix_prob
+        """
+        if extracted_waveforms is not None:
+            batch_size = waveforms.shape[0]
+            # Create binary mask with shape [B, 1, 1, ...] matching waveforms dimensions
+            mask_shape = (batch_size,) + (1,) * (waveforms.ndim - 1)
+            mask = (torch.rand(mask_shape, device=waveforms.device) < self.diffusion_input_mix_prob).float()
+
+            # Mix: waveforms = mask * extracted + (1 - mask) * clean
+            waveforms = mask * extracted_waveforms + (1 - mask) * waveforms
+
+        return waveforms
+
+    def get_input(self, batch):
+
+        if isinstance(batch, (list, tuple)) and self.pre_trained_mixture_feature_extractor is not None and self.stem_to_diffuse == "random":
+            # Random stem training mode
+            waveforms, mixtures = batch[0], batch[1]
+            batch_size, num_stems, c, t = waveforms.shape
+            mixture = mixtures
+
+            with torch.no_grad():
+                with torch.cuda.amp.autocast(enabled=True):
+                    mixture_features_channels_list = self.pre_trained_mixture_feature_extractor_model.model.unet.get_feature(mixture)
+                    separated_tracks = mixture_features_channels_list[-1]
+
+            if self.training:
+                # Training: pick 1 random stem, pass stem index through features
+                stem_idx = torch.randint(0, num_stems, (1,)).item()
+                waveforms = waveforms[:, stem_idx:stem_idx+1, :, :]  # [B, 1, C, T]
+                separated_track_to_diffuse = separated_tracks[:, stem_idx:stem_idx+1, :, :]
+                class_indexes = stem_idx  # passed as features kwarg to BSRoformer
+            else:
+                # Eval: all stems
+                separated_track_to_diffuse = separated_tracks
+                class_indexes = None
+
+            channels_list = None
+            embedding = None
+
+        elif isinstance(batch, (list, tuple)) and self.pre_trained_mixture_feature_extractor is not None and self.stem_to_diffuse is not None:
+
+            waveforms, mixtures = batch
+
+            batch_size, s, c, t = waveforms.shape
+            mixture = mixtures
+
+            # Select specific stem if stem_to_diffuse is specified
+            waveforms = waveforms[:, self.stem_to_diffuse, :, :]
+
+            # extract features form pre trained model
+            with torch.no_grad():
+                with torch.cuda.amp.autocast(enabled=True):
+                    # Extract hierarchical features from the mixture using the BS-Roformer
+                    mixture_features_channels_list = self.pre_trained_mixture_feature_extractor_model.model.unet.get_feature(mixture)
+
+                    # Also get the separated tracks (for training mixing and validation)
+                    separated_tracks = mixture_features_channels_list[-1]
+                    separated_track_to_diffuse = separated_tracks[:, self.stem_to_diffuse, :, :]
+
+            class_indexes = None
+            channels_list = None
+            embedding = None
+
+        elif isinstance(batch, (list, tuple)) and self.pre_trained_mixture_feature_extractor is not None and self.stem_to_diffuse is None:
+            # All stems mode: diffuse all stems simultaneously
+            waveforms, mixtures = batch
+
+            batch_size, num_stems, c, t = waveforms.shape
+            mixture = mixtures
+
+            # extract features from pre trained model
+            with torch.no_grad():
+                with torch.cuda.amp.autocast(enabled=True):
+                    # Extract hierarchical features from the mixture using the BS-Roformer
+                    mixture_features_channels_list = self.pre_trained_mixture_feature_extractor_model.model.unet.get_feature(mixture)
+
+                    # Get all separated tracks (for training mixing and validation)
+                    separated_tracks = mixture_features_channels_list[-1]
+                    separated_track_to_diffuse = separated_tracks  # Keep all stems [B, num_stems, C, T]
+
+            class_indexes = None
+            channels_list = None
+            embedding = None
+
+        return waveforms, class_indexes, channels_list, embedding, mixture_features_channels_list, separated_track_to_diffuse
+
+    def training_step(self, batch, batch_idx):
+        waveforms, class_indexes, channels_list, embedding, mixture_features_channels_list, separated_track_to_diffuse = self.get_input(batch)
+
+        # Clean ground truth is always the target
+        clean_target = waveforms
+
+        # Apply training-only mixing between clean targets and extracted waveforms
+        # (controls what gets noised - target is always clean)
+        waveforms = self.apply_training_mixing(waveforms, separated_track_to_diffuse)
+
+        loss = self.model(waveforms, target=clean_target, features=class_indexes, channels_list=channels_list, embedding=embedding, mixture_features_channels_list=mixture_features_channels_list)
+        self.log("train_loss", loss, sync_dist=True)
+        return loss
+
+    def validation_step(self, batch, batch_idx):
+        waveforms, class_indexes, channels_list, embedding, mixture_features_channels_list, separated_track_to_diffuse = self.get_input(batch)
+
+        loss = self.model(separated_track_to_diffuse, target=waveforms, features=class_indexes, channels_list=channels_list, embedding=embedding, mixture_features_channels_list=mixture_features_channels_list)
+        self.log("valid_loss", loss, sync_dist=True)
+        return loss
+
+class Audio_MSST_Det2_Model(pl.LightningModule):
+    """
+    Deterministic 'double-det' model: same BSRoformerStemsInStemsOutStemCondRandomStem
+    architecture as the diffusion model, but trained as a direct regressor (no noise).
+    Used to confirm that per-NFE cost is purely architectural, not diffusion-specific.
+
+    Pipeline (same as diffusion):
+      1. Frozen det BSRoformer extracts features + separated stems from mixture
+      2. Det2 backbone refines the extracted stems deterministically (time=zeros)
+      3. MSE loss against clean ground truth
+    """
+    def __init__(self, learning_rate: float, beta1: float, beta2: float, **kwargs):
+        super().__init__()
+        self.save_hyperparameters()
+        self.learning_rate = learning_rate
+        self.beta1 = beta1
+        self.beta2 = beta2
+
+        self.diffusion_input_mix_prob = kwargs.pop('diffusion_input_mix_prob', 0.5)
+        self.stem_to_diffuse = kwargs.pop('stem_to_diffuse', 'random')
+
+        pre_trained_cfg  = kwargs.pop('pre_trained_mixture_feature_extractor_model_config', None)
+        pre_trained_ckpt = kwargs.pop('pre_trained_mixture_feature_extractor', None)
+
+        if pre_trained_cfg is not None:
+            self.feature_extractor = instantiate_from_config(pre_trained_cfg)
+            print("Loading det feature extractor from:", pre_trained_ckpt)
+            self.feature_extractor.load_state_dict(
+                torch.load(pre_trained_ckpt, map_location="cpu")["state_dict"]
+            )
+            for p in self.feature_extractor.parameters():
+                p.requires_grad = False
+            self.feature_extractor.eval()
+
+        from main.msst.models.bs_roformer.bs_roformer import BSRoformerStemsInStemsOutStemCondRandomStem_det2
+        backbone_kwargs = {k: v for k, v in kwargs.items()
+                          if k not in ('model_type', 'use_context_time', 'diffusion_sigma_data',
+                                       'diffusion_dynamic_threshold', 'loss_type')}
+        self.unet = BSRoformerStemsInStemsOutStemCondRandomStem_det2(**backbone_kwargs)
+
+        if pre_trained_ckpt is not None:
+            print("Loading det weights into Det2 backbone from:", pre_trained_ckpt)
+            ckpt = torch.load(pre_trained_ckpt, map_location="cpu")
+            # det checkpoint keys are prefixed with "model.unet."
+            state = {k[len("model.unet."):]: v
+                     for k, v in ckpt["state_dict"].items()
+                     if k.startswith("model.unet.")}
+            missing, unexpected = self.unet.load_state_dict(state, strict=False)
+            print(f"  loaded {len(state)-len(missing)} keys  |  missing: {len(missing)}  unexpected: {len(unexpected)}")
+
+    def configure_optimizers(self):
+        return torch.optim.Adam(
+            self.unet.parameters(), lr=self.learning_rate,
+            betas=(self.beta1, self.beta2),
+        )
+
+    def _get_features(self, mixture):
+        with torch.no_grad(), torch.cuda.amp.autocast(enabled=True):
+            features = self.feature_extractor.model.unet.get_feature(mixture)
+        return features  # list; [-1] is separated stems [B, N, C, T]
+
+    def _mix_input(self, extracted, clean):
+        """Mix extracted and clean stems with diffusion_input_mix_prob."""
+        B = clean.shape[0]
+        mask_shape = (B,) + (1,) * (clean.ndim - 1)
+        mask = (torch.rand(mask_shape, device=clean.device) < self.diffusion_input_mix_prob).float()
+        return mask * extracted + (1 - mask) * clean
+
+    def training_step(self, batch, batch_idx):
+        waveforms, mixture = batch
+        B, N, C, T = waveforms.shape
+        mix_features = self._get_features(mixture)
+        separated = mix_features[-1]          # [B, N, C, T]
+
+        stem_idx = torch.randint(0, N, (1,)).item()
+        clean    = waveforms[:, stem_idx:stem_idx+1]          # [B, 1, C, T]
+        x_input  = self._mix_input(separated[:, stem_idx:stem_idx+1], clean)
+
+        pred = self.unet(x_input, time=None, features=stem_idx,
+                         mixture_features_channels_list=mix_features)
+        loss = F.mse_loss(pred, clean)
+        self.log("train_loss", loss, sync_dist=True)
+        return loss
+
+    def validation_step(self, batch, batch_idx):
+        waveforms, mixture = batch
+        mix_features = self._get_features(mixture)
+        separated    = mix_features[-1]       # [B, N, C, T]
+
+        # eval: all stems, no time conditioning
+        pred = self.unet(separated, time=None, features=None,
+                         mixture_features_channels_list=mix_features)
+
+        loss = F.mse_loss(pred, waveforms)
+        self.log("valid_loss", loss, sync_dist=True)
+        return loss
 
 
 """ Datamodule """
@@ -1676,5 +2064,283 @@ class ClassCondSeparateTrackSampleLogger_simple(ClassCondSeparateTrackSampleLogg
                 original_samples[stem].append(stem_data[idx])  
         
         mixture_audios = batch[2].sum(1)[:, 0, :].detach().cpu().numpy()[..., np.newaxis] #channels_list[0][idx, 0, :].detach().cpu().numpy()[..., np.newaxis]
-        
+
         return  original_samples, generated_samples, mixture_audios
+
+
+class ClassCondSeparateTrackSampleLogger_simple_MSST(ClassCondSeparateTrackSampleLogger):
+    def __init__(
+        self,
+        num_items: int,
+        channels: int,
+        sampling_rate: int,
+        length: int,
+        stems = ['bass', 'drums', 'guitar', 'piano'],
+        log_all: bool = False,
+        run_museval: bool = True,
+    ) -> None:
+        super().__init__(
+            num_items=num_items,
+            channels=channels,
+            sampling_rate=sampling_rate,
+            length=length,
+            sampling_steps=None,
+            diffusion_schedule=None,
+            diffusion_sampler=None,
+            stems=stems,
+            log_all=log_all,
+            run_museval=run_museval,
+        )
+
+    @torch.no_grad()
+    def generate_sample(self, trainer, pl_module, batch):
+
+        model = pl_module.model
+
+        # Extract mixture and original audio from the batch
+        waveforms, mixtures = pl_module.get_input(batch)
+
+        # Get start diffusion noise for whole batch
+        noise = mixtures
+
+        # Dictionary to store generated samples
+        generated_samples = {stem: [] for stem in self.stems}
+
+
+        # Sample from the model using the noise and the current one-hot features
+        # Use autocast to match trainer precision
+        with torch.cuda.amp.autocast(enabled=trainer.precision == "16-mixed"):
+            samples = model.sample(noise=noise,
+                                   num_steps = None,
+                                    sigma_schedule=None,
+                                    sampler=None)
+        # samples shape: [batch, stems, channels, time] -> rearrange to [batch, stems, time, channels]
+        samples = rearrange(samples, "b s c t -> b s t c").detach().cpu().numpy()
+
+        for i, stem in enumerate(self.stems):
+            # samples[0, i] gives [time, channels] for stem i
+            for idx in range(waveforms.size(0)):
+                generated_samples[stem].append(samples[idx, i])
+
+        # get original stems
+        original_samples = {stem: [] for stem in self.stems}
+
+        original_stems = waveforms  # shape: [batch, stems, channels, time]
+
+        for i, stem in enumerate(self.stems):
+            stem_data = original_stems[:, i]  # [batch, channels, time]
+            stem_data = rearrange(stem_data, "b c t -> b t c").detach().cpu().numpy()  # [batch, time, channels]
+            for idx in range(waveforms.size(0)):
+                original_samples[stem].append(stem_data[idx])  # [time, channels]
+
+        # mixture_audios: sum stems, take first channel, add channel dimension
+        mixture_audios = rearrange(mixtures, "b c t -> b t c").detach().cpu().numpy()  # [batch, time, 1]
+
+        return  original_samples, generated_samples, mixture_audios
+    
+    
+class ClassCondSeparateTrackSampleLogger_MUSDB_MSST_stems_in_out(ClassCondSeparateTrackSampleLogger):
+    def __init__(
+        self,
+        num_items: int,
+        channels: int,
+        sampling_rate: int,
+        length: int,
+        sampling_steps: List[int],
+        diffusion_schedule: Schedule,
+        diffusion_sampler: Sampler,
+        stems: List[str],
+        log_deterministic: bool = False,
+        log_all: bool = False,
+        run_museval: bool = True,
+    ) -> None:
+        super().__init__(
+            num_items=num_items,
+            channels=channels,
+            sampling_rate=sampling_rate,
+            length=length,
+            sampling_steps=sampling_steps,
+            diffusion_schedule=diffusion_schedule,
+            diffusion_sampler=diffusion_sampler,
+            stems=stems,
+            log_all=log_all,
+            run_museval=run_museval,
+        )
+        self.log_deterministic = log_deterministic
+
+    def log_sample(self, trainer, pl_module, batch, batch_idx):
+        is_train = pl_module.training
+        if is_train:
+            pl_module.eval()
+
+        wandb_logger = get_wandb_logger(trainer).experiment
+        original_samples, generated_samples, mixture_audios, deterministic_samples = self.generate_sample(trainer, pl_module, batch)
+
+        track_names = None
+        if isinstance(batch, (list, tuple)) and len(batch) >= 3:
+            candidate = batch[-1]
+            if isinstance(candidate, (list, tuple)) and len(candidate) > 0 and isinstance(candidate[0], str):
+                track_names = list(candidate)
+
+        if batch_idx == 0 and trainer.is_global_zero:
+            self.log_audio(original_samples, generated_samples, mixture_audios, wandb_logger, trainer, deterministic_samples)
+
+        self.update_metrics(original_samples, generated_samples, mixture_audios, wandb_logger, trainer,
+                            track_names=track_names)
+
+        if is_train:
+            pl_module.train()
+
+    @torch.no_grad()
+    def log_audio(self, original_samples, generated_samples, mixture_audio, wandb_logger, trainer, deterministic_samples=None):
+        super().log_audio(original_samples, generated_samples, mixture_audio, wandb_logger, trainer)
+        if deterministic_samples is not None:
+            n = len(deterministic_samples[self.stems[0]]) if self.log_all else self.num_items
+            for idx in range(n):
+                logging_data = {}
+                for stem in self.stems:
+                    det_audio = deterministic_samples[stem][idx]
+                    logging_data[f"deterministic_{stem}"] = wandb.Audio(
+                        det_audio,
+                        caption=f"Deterministic {stem} (idx: {idx})",
+                        sample_rate=self.sampling_rate,
+                    )
+                det_mix = sum(deterministic_samples[stem][idx] for stem in self.stems)
+                logging_data[f"deterministic_mix"] = wandb.Audio(
+                    det_mix,
+                    caption=f"Deterministic Mix (idx: {idx})",
+                    sample_rate=self.sampling_rate,
+                )
+                wandb_logger.log(logging_data)
+
+    @torch.no_grad()
+    def generate_sample(self, trainer, pl_module, batch):
+
+        model = pl_module.model
+
+        # Extract mixture and original audio from the batch
+        waveforms, class_indexes, channels_list, embedding, mixture_features_channels_list, separated_track_to_diffuse = pl_module.get_input(batch)
+
+        # start diffusion noise
+        noise = torch.randn(
+            (waveforms.size(0), len(self.stems), self.channels, waveforms.size(-1)), device=pl_module.device
+        )
+
+        noise = [noise, separated_track_to_diffuse]
+
+
+        # Dictionary to store generated samples
+        generated_samples = {stem: [] for stem in self.stems}
+
+
+        # Sample from the model using the noise and the current one-hot features
+        # Use autocast to match trainer precision
+        with torch.cuda.amp.autocast(enabled=trainer.precision == "16-mixed"):
+           
+            # Sample from the model
+            samples = model.sample(
+                noise=noise,
+                features=class_indexes,
+                sampler=self.diffusion_sampler,
+                sigma_schedule=self.diffusion_schedule,
+                num_steps=self.sampling_steps,
+                channels_list=channels_list,
+                mixture_features_channels_list=mixture_features_channels_list,
+            )
+        
+        # samples shape: [batch, stems, channels, time] -> rearrange to [batch, stems, time, channels]
+        samples = rearrange(samples, "b s c t -> b s t c").detach().cpu().numpy()
+
+        for i, stem in enumerate(self.stems):
+            # samples[0, i] gives [time, channels] for stem i
+            for idx in range(waveforms.size(0)):
+                # if steps not in generated_samples[stem]:
+                generated_samples[stem].append(samples[idx, i])
+
+        # get original stems
+        original_samples = {stem: [] for stem in self.stems}
+
+        original_stems = waveforms  # shape: [batch, stems, channels, time]
+
+        for i, stem in enumerate(self.stems):
+            stem_data = original_stems[:, i]  # [batch, channels, time]
+            stem_data = rearrange(stem_data, "b c t -> b t c").detach().cpu().numpy()  # [batch, time, channels]
+            for idx in range(waveforms.size(0)):
+                original_samples[stem].append(stem_data[idx])  # [time, channels]
+
+        # deterministic model output stems
+        deterministic_samples = None
+        if self.log_deterministic:
+            deterministic_samples = {stem: [] for stem in self.stems}
+            det_stems = separated_track_to_diffuse  # [batch, stems, channels, time]
+            for i, stem in enumerate(self.stems):
+                stem_data = det_stems[:, i]
+                stem_data = rearrange(stem_data, "b c t -> b t c").detach().cpu().numpy()
+                for idx in range(waveforms.size(0)):
+                    deterministic_samples[stem].append(stem_data[idx])
+
+        # mixture_audios: sum stems, take first channel, add channel dimension
+        mixture_audios = rearrange( batch[1], "b c t -> b t c").detach().cpu().numpy()
+
+        return  original_samples, generated_samples, mixture_audios, deterministic_samples
+
+
+
+
+class ClassCondSeparateTrackSampleLogger_Det2_MSST(ClassCondSeparateTrackSampleLogger_MUSDB_MSST_stems_in_out):
+    """Sample logger for Audio_MSST_Det2_Model: single deterministic forward pass, no diffusion."""
+    def __init__(self, num_items, channels, sampling_rate, length,
+                 stems=('drums', 'bass', 'other', 'vocals'),
+                 log_deterministic=False,
+                 log_all=False,
+                 run_museval=True):
+        super().__init__(
+            num_items=num_items,
+            channels=channels,
+            sampling_rate=sampling_rate,
+            length=length,
+            sampling_steps=1,
+            diffusion_schedule=None,
+            diffusion_sampler=None,
+            stems=list(stems),
+            log_deterministic=log_deterministic,
+            log_all=log_all,
+            run_museval=run_museval,
+        )
+
+    @torch.no_grad()
+    def generate_sample(self, trainer, pl_module, batch):
+        waveforms, mixture = batch
+
+        with torch.cuda.amp.autocast(enabled=trainer.precision == "16-mixed"):
+            mix_features = pl_module._get_features(mixture)
+            separated_track_to_diffuse = mix_features[-1]
+            pred = pl_module.unet(
+                separated_track_to_diffuse, time=None, features=None,
+                mixture_features_channels_list=mix_features,
+            )
+
+        samples = rearrange(pred, "b s c t -> b s t c").detach().cpu().numpy()
+
+        generated_samples = {stem: [] for stem in self.stems}
+        for i, stem in enumerate(self.stems):
+            for idx in range(waveforms.size(0)):
+                generated_samples[stem].append(samples[idx, i])
+
+        original_samples = {stem: [] for stem in self.stems}
+        for i, stem in enumerate(self.stems):
+            stem_data = rearrange(waveforms[:, i], "b c t -> b t c").detach().cpu().numpy()
+            for idx in range(waveforms.size(0)):
+                original_samples[stem].append(stem_data[idx])
+
+        mixture_audios = rearrange(mixture, "b c t -> b t c").detach().cpu().numpy()
+
+        deterministic_samples = None
+        if self.log_deterministic:
+            deterministic_samples = {stem: [] for stem in self.stems}
+            for i, stem in enumerate(self.stems):
+                stem_data = rearrange(separated_track_to_diffuse[:, i], "b c t -> b t c").detach().cpu().numpy()
+                for idx in range(waveforms.size(0)):
+                    deterministic_samples[stem].append(stem_data[idx])
+
+        return original_samples, generated_samples, mixture_audios, deterministic_samples

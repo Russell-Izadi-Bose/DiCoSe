@@ -6,6 +6,9 @@ from torch import Tensor, nn
 from audio_diffusion_pytorch_.modules import UNet1d
 import pytorch_lightning as pl
 import torch.nn.functional as F
+from torch.optim import Adam, AdamW, SGD, RMSprop
+from torch.optim import RAdam
+from torch.optim.lr_scheduler import ReduceLROnPlateau
 
 
 class Model1d_simple(nn.Module):
@@ -15,7 +18,37 @@ class Model1d_simple(nn.Module):
     ):
         super().__init__()
 
-        self.unet = UNet1d(**kwargs)
+        # check here if MSST and call model accordingly else UNet.
+        model_type = kwargs.pop('model_type', None)
+        self.model_type = model_type
+
+        if model_type == 'bs_roformer':
+            from main.msst.models.bs_roformer import BSRoformer
+            self.unet = BSRoformer(**kwargs)
+            print(f"Loaded MSST model: {model_type}")
+        elif model_type == 'mel_band_roformer':
+            from main.msst.models.bs_roformer import MelBandRoformer
+            self.unet = MelBandRoformer(**kwargs)
+            print(f"Loaded MSST model: {model_type}")
+        elif model_type == 'bs_conformer':
+            from main.msst.models.bs_roformer import BSConformer
+            self.unet = BSConformer(**kwargs)
+            print(f"Loaded MSST model: {model_type}")
+        elif model_type == 'mel_band_conformer':
+            from main.msst.models.bs_roformer import MelBandConformer
+            self.unet = MelBandConformer(**kwargs)
+            print(f"Loaded MSST model: {model_type}")
+        elif model_type == 'bs_roformer_experimental':
+            from main.msst.models.bs_roformer.bs_roformer_experimental import BSRoformer
+            self.unet = BSRoformer(**kwargs)
+            print(f"Loaded MSST model: {model_type}")
+        elif model_type == 'mel_band_roformer_experimental':
+            from main.msst.models.bs_roformer.mel_band_roformer_experimental import MelBandRoformer
+            self.unet = MelBandRoformer(**kwargs)
+            print(f"Loaded MSST model: {model_type}")
+        else:
+            # Default: UNet1d (backward compatible)
+            self.unet = UNet1d(**kwargs)
 
     def forward(self, x: Tensor, **kwargs) -> Tensor:
         return self.unet(x, **kwargs)
@@ -148,5 +181,110 @@ class Audio_DM_Model_simple(pl.LightningModule):
         losses = F.mse_loss(predictions, waveforms, reduction="none")
         losses = reduce(losses, "b ... -> b", "mean")
         loss = losses.mean()
+        self.log("valid_loss", loss, sync_dist=True)
+        return loss
+
+
+class Audio_MSST_Model_simple(pl.LightningModule):
+    def __init__(
+        self, learning_rate: float, patience: int = 3, reduce_factor: float = 0.95,
+        load_pretrained: str = None, optimizer: str = 'adam', optimizer_params: dict = None,
+        use_scheduler: bool = False, scheduler_monitor: str = 'valid_loss', scheduler_mode: str = 'max',
+        *args, **kwargs
+    ):
+        super().__init__()
+        self.save_hyperparameters()
+        self.learning_rate = learning_rate
+        self.patience = patience
+        self.reduce_factor = reduce_factor
+        self.optimizer_type = optimizer
+        self.optimizer_params = optimizer_params if optimizer_params is not None else {}
+        self.use_scheduler = use_scheduler
+        self.scheduler_monitor = scheduler_monitor
+        self.scheduler_mode = scheduler_mode
+
+        self.model = Model1d_simple(**kwargs)
+
+        # Load pretrained weights if provided (MSST checkpoint format)
+        if load_pretrained:
+            print(f"Loading pretrained weights from: {load_pretrained}")
+            checkpoint = torch.load(load_pretrained, map_location='cpu', weights_only=False)
+
+            # MSST checkpoints store weights under 'model_state_dict'
+            self.model.unet.load_state_dict(checkpoint, strict=True)
+            print(f"Successfully loaded pretrained weights from epoch {checkpoint.get('epoch', 'unknown')}")
+
+
+    @property
+    def device(self):
+        return next(self.model.parameters()).device
+
+    def configure_optimizers(self):
+        print(f'Optimizer type: {self.optimizer_type}')
+        if self.optimizer_params:
+            print(f'Optimizer params from config: {self.optimizer_params}')
+
+        if self.optimizer_type == 'adam':
+            optimizer = Adam(self.parameters(), lr=self.learning_rate, **self.optimizer_params)
+        elif self.optimizer_type == 'adamw':
+            optimizer = AdamW(self.parameters(), lr=self.learning_rate, **self.optimizer_params)
+        elif self.optimizer_type == 'radam':
+            optimizer = RAdam(self.parameters(), lr=self.learning_rate, **self.optimizer_params)
+        elif self.optimizer_type == 'rmsprop':
+            optimizer = RMSprop(self.parameters(), lr=self.learning_rate, **self.optimizer_params)
+        elif self.optimizer_type == 'prodigy':
+            from prodigyopt import Prodigy
+            # you can choose weight decay value based on your problem, 0 by default
+            # We recommend using lr=1.0 (default) for all networks.
+            optimizer = Prodigy(self.parameters(), lr=self.learning_rate, **self.optimizer_params)
+        elif self.optimizer_type == 'adamw8bit':
+            import bitsandbytes as bnb
+            optimizer = bnb.optim.AdamW8bit(self.parameters(), lr=self.learning_rate, **self.optimizer_params)
+        elif self.optimizer_type == 'sgd':
+            print('Use SGD optimizer')
+            optimizer = SGD(self.parameters(), lr=self.learning_rate, **self.optimizer_params)
+        else:
+            print(f'Unknown optimizer: {self.optimizer_type}')
+            raise ValueError(f'Unknown optimizer: {self.optimizer_type}')
+
+        # Reduce LR if no improvements for several epochs
+        if self.use_scheduler:
+            scheduler = ReduceLROnPlateau(
+                optimizer,
+                self.scheduler_mode,
+                patience=self.patience,
+                factor=self.reduce_factor,
+                verbose=True
+            )
+            print(f'Using ReduceLROnPlateau scheduler: mode={self.scheduler_mode}, monitor={self.scheduler_monitor}, patience={self.patience}, factor={self.reduce_factor}')
+
+            return {
+                'optimizer': optimizer,
+                'lr_scheduler': {
+                    'scheduler': scheduler,
+                    'monitor': self.scheduler_monitor,
+                    'interval': 'epoch',
+                    'frequency': 1
+                }
+            }
+
+        return optimizer
+
+    def get_input(self, batch):
+        waveforms, mixtures = batch[0], batch[1]
+        return waveforms, mixtures
+
+    def training_step(self, batch, batch_idx):
+        ### there and validation step will change but later
+        waveforms, mixtures = self.get_input(batch)
+        loss = self.model(mixtures, target = waveforms)
+
+        self.log("train_loss", loss, sync_dist=True)
+        return loss
+
+    def validation_step(self, batch, batch_idx):
+
+        waveforms, mixtures = self.get_input(batch)
+        loss = self.model(mixtures, target = waveforms)
         self.log("valid_loss", loss, sync_dist=True)
         return loss

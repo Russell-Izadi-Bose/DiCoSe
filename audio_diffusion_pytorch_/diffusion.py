@@ -202,7 +202,9 @@ class ADPM2Sampler(Sampler):
     def forward(
         self, noise: Tensor, fn: Callable, sigmas: Tensor, num_steps: int
     ) -> Tensor:
-        x = sigmas[0] * noise
+        # x = sigmas[0] * noise
+        x = sigmas[0] * noise[0] + noise[1]
+        
         # Denoise to sample
         for i in range(num_steps - 1):
             x = self.step(x, fn=fn, sigma=sigmas[i], sigma_next=sigmas[i + 1])  # type: ignore # noqa
@@ -255,7 +257,7 @@ class MSDMSampler(Sampler):
     ) -> torch.Tensor:
 
         x = sigmas[0] * noises[0] + noises[1]
-        _, num_sources, _  = x.shape    
+        # _, num_sources, _  = x.shape
 
         # Initialize default values
         source = torch.zeros_like(x) if source is None else source
@@ -323,6 +325,8 @@ class Diffusion(nn.Module):
         sigma_distribution: Distribution,
         sigma_data: float,  # data distribution standard deviation
         dynamic_threshold: float = 0.0,
+        loss_type: str = "mse",  # "mse" or "bsroformer"
+        bridge_sigma_max: float = None,  # If set, enables bridge interpolation mode
     ):
         super().__init__()
 
@@ -330,10 +334,14 @@ class Diffusion(nn.Module):
         self.sigma_data = sigma_data
         self.sigma_distribution = sigma_distribution
         self.dynamic_threshold = dynamic_threshold
+        self.loss_type = loss_type
+        self.bridge_sigma_max = bridge_sigma_max  # For bridge/interpolation mode
 
-    def get_scale_weights(self, sigmas: Tensor) -> Tuple[Tensor, ...]:
+    def get_scale_weights(self, sigmas: Tensor, ndim: int = 3) -> Tuple[Tensor, ...]:
         sigma_data = self.sigma_data
-        sigmas_padded = rearrange(sigmas, "b -> b 1 1")
+        # Pad sigmas to match input dimensions: [B] -> [B, 1, 1, ...]
+        batch = sigmas.shape[0]
+        sigmas_padded = sigmas.view(batch, *([1] * (ndim - 1)))
         c_skip = (sigma_data ** 2) / (sigmas_padded ** 2 + sigma_data ** 2)
         c_out = (
             sigmas_padded * sigma_data * (sigma_data ** 2 + sigmas_padded ** 2) ** -0.5
@@ -360,7 +368,7 @@ class Diffusion(nn.Module):
         assert exists(sigmas)
 
         # Predict network output and add skip connection
-        c_skip, c_out, c_in, c_noise = self.get_scale_weights(sigmas)
+        c_skip, c_out, c_in, c_noise = self.get_scale_weights(sigmas, ndim=x_noisy.ndim)
         x_pred = self.net(c_in * x_noisy, c_noise, **kwargs)
         x_denoised = c_skip * x_noisy + c_out * x_pred
 
@@ -382,27 +390,153 @@ class Diffusion(nn.Module):
         # Computes weight depending on data distribution
         return (sigmas ** 2 + self.sigma_data ** 2) * (sigmas * self.sigma_data) ** -2
 
-    def forward(self, x: Tensor, noise: Tensor = None, **kwargs) -> Tensor:
+    def forward(self, x: Tensor, noise: Tensor = None, target: Tensor = None, **kwargs) -> Tensor:
+        """
+        Forward pass for diffusion training.
+
+        Args:
+            x: Input tensor - source for bridge mode (extracted), or base for standard mode
+            noise: Optional pre-generated noise
+            target: Clean ground truth (defaults to x if not provided)
+
+        Bridge mode (when bridge_sigma_max is set):
+            - At high sigma: x_base ≈ x (extracted)
+            - At low sigma: x_base ≈ target (clean)
+            - Interpolates smoothly based on sigma
+        """
         batch, device = x.shape[0], x.device
+
+        # target defaults to x (standard diffusion), but can be overridden
+        # to always reconstruct clean ground truth even when x is degraded
+        if target is None:
+            target = x
 
         # Sample amount of noise to add for each batch element
         sigmas = self.sigma_distribution(num_samples=batch, device=device)
-        sigmas_padded = rearrange(sigmas, "b -> b 1 1")
+        # Pad sigmas to match x dimensions: [B] -> [B, 1, 1, ...]
+        sigmas_padded = sigmas.view(batch, *([1] * (x.ndim - 1)))
 
-        # Add noise to input
-        noise = default(noise, lambda: torch.randn_like(x))
-        x_noisy = x + sigmas_padded * noise
+        # Bridge interpolation mode: interpolate base signal based on sigma
+        # At high sigma -> use x (extracted), at low sigma -> use target (clean)
+        if self.bridge_sigma_max is not None and target is not None:
+            # alpha = 1 at sigma >= bridge_sigma_max, alpha = 0 at sigma = 0
+            alpha = (sigmas_padded / self.bridge_sigma_max).clamp(0, 1)
+            x_base = alpha * x + (1 - alpha) * target
+        else:
+            x_base = x
+
+        # Add noise to base signal
+        noise = default(noise, lambda: torch.randn_like(x_base))
+        x_noisy = x_base + sigmas_padded * noise
 
         # Compute denoised values
         x_denoised = self.denoise_fn(x_noisy, sigmas=sigmas, **kwargs)
 
-        # Compute weighted loss
-        losses = F.mse_loss(x_denoised, x, reduction="none")
-        losses = reduce(losses, "b ... -> b", "mean")
-        losses = losses * self.loss_weight(sigmas)
-        loss = losses.mean()
+        # Reconstruction loss: always compared against target (clean ground truth)
+        if self.loss_type == "mse":
+            per_example_loss = self._mse_per_example(x_denoised, target)
+            # EDM weighting only for MSE (theoretically grounded)
+            weights = self.loss_weight(sigmas)   # [B]
+            loss = (per_example_loss * weights).mean()
+        else:
+            per_example_loss = self._bsroformer_loss(x_denoised, target)
+            # Adding EDM weighting for non-MSE losses showed better results
+            weights = self.loss_weight(sigmas)   # [B]
+            loss = (per_example_loss * weights).mean()
 
         return loss
+
+    def _mse_per_example(self, x_denoised: Tensor, x: Tensor) -> Tensor:
+        # [B, ...] -> [B]
+        losses = F.mse_loss(x_denoised, x, reduction="none")
+        losses = reduce(losses, "b ... -> b", "mean")
+        return losses
+
+    def _ensure_bct(self, x: Tensor) -> Tensor:
+        """
+        Normalize shapes to [B, C, T]:
+
+        - [B, T]        -> [B, 1, T]
+        - [B, C, T]     -> [B, C, T]
+        - [B, N, C, T]  -> [B, N*C, T]
+        """
+        if x.ndim == 2:
+            x = x[:, None, :]
+        elif x.ndim == 3:
+            pass
+        elif x.ndim == 4:
+            B, N, C, T = x.shape
+            x = x.view(B, N * C, T)
+        else:
+            raise ValueError(f"Unsupported audio shape {x.shape}")
+        return x
+
+    def _bsroformer_loss(self, recon: Tensor, target: Tensor) -> Tensor:
+        """
+        BSRoformer-style reconstruction loss:
+        waveform L1 + multi-resolution STFT L1, per-example [B].
+
+        Hyperparameters are taken from self.net if present, otherwise fall back to defaults.
+        """
+
+        device = recon.device
+        B = recon.shape[0]
+
+        # base waveform L1 per example
+        wave_loss = F.l1_loss(recon, target, reduction="none")
+        wave_loss = wave_loss.view(B, -1).mean(dim=1)  # [B]
+
+        # read settings from the underlying net if they exist
+        net = self.net
+        multi_weight = getattr(net, "multi_stft_resolution_loss_weight", 1.0)
+        window_sizes = getattr(
+            net,
+            "multi_stft_resolutions_window_sizes",
+            (4096, 2048, 1024, 512, 256),
+        )
+        n_fft_base = getattr(net, "multi_stft_n_fft", 2048)
+        window_fn = getattr(net, "multi_stft_window_fn", torch.hann_window)
+        multi_kwargs = getattr(
+            net,
+            "multi_stft_kwargs",
+            dict(hop_length=147, normalized=False),
+        )
+
+        recon_bct = self._ensure_bct(recon)   # [B, C, T]
+        target_bct = self._ensure_bct(target) # [B, C, T]
+        B, C, T = recon_bct.shape
+
+        multi_stft_loss = recon.new_zeros(B)
+
+        for window_size in window_sizes:
+            n_fft = max(window_size, n_fft_base)
+
+            res_stft_kwargs = dict(
+                n_fft=n_fft,
+                win_length=window_size,
+                return_complex=True,
+                window=window_fn(window_size, device=device),
+                **multi_kwargs,
+            )
+
+            # [B, C, T] -> [B*C, T]
+            recon_flat = recon_bct.reshape(B * C, T)
+            target_flat = target_bct.reshape(B * C, T)
+
+            recon_Y = torch.stft(recon_flat, **res_stft_kwargs)
+            target_Y = torch.stft(target_flat, **res_stft_kwargs)
+
+            # [B*C, F, T] -> [B, C, F, T]
+            recon_Y = recon_Y.view(B, C, *recon_Y.shape[-2:])
+            target_Y = target_Y.view(B, C, *target_Y.shape[-2:])
+
+            diff = (recon_Y - target_Y).abs()
+            # average over channels, freqs, time -> [B]
+            stft_loss_b = diff.mean(dim=(1, 2, 3))
+            multi_stft_loss = multi_stft_loss + stft_loss_b
+
+        total = wave_loss + multi_weight * multi_stft_loss  # [B]
+        return total
 
 
 class DiffusionSampler(nn.Module):

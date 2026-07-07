@@ -29,19 +29,64 @@ class Model1d(nn.Module):
         diffusion_sigma_data: int,
         diffusion_dynamic_threshold: float,
         use_classifier_free_guidance: bool = False,
+        loss_type: str = "mse",
+        bridge_sigma_max: float = None,  # For bridge/interpolation mode
         **kwargs
     ):
         super().__init__()
+        self.bridge_sigma_max = bridge_sigma_max
 
-        UNet = UNetConditional1d if use_classifier_free_guidance else UNet1d
+        model_type = kwargs.pop('model_type', "UNet1DModel")
 
-        self.unet = UNet(**kwargs)
+        if model_type == "UNet1DModel":
+
+            UNet = UNetConditional1d if use_classifier_free_guidance else UNet1d
+            self.unet = UNet(**kwargs)
+
+        if model_type == 'bs_roformer':
+            from main.msst.models.bs_roformer import BSRoformer
+            self.unet = BSRoformer(**kwargs)
+            print(f"Loaded MSST model: {model_type}")
+        elif model_type == 'bs_roformer_stems_in_out':
+            from main.msst.models.bs_roformer import BSRoformerStemsInStemsOut
+            self.unet = BSRoformerStemsInStemsOut(**kwargs)
+            print(f"Loaded MSST model: {model_type} (stems-in-stems-out)")
+        elif model_type == 'bs_roformer_stems_in_out_stem_cond':
+            from main.msst.models.bs_roformer import BSRoformerStemsInStemsOutStemCond
+            self.unet = BSRoformerStemsInStemsOutStemCond(**kwargs)
+            print(f"Loaded MSST model: {model_type} (stems-in-stems-out with stem conditioning)")
+        elif model_type == 'bs_roformer_stems_in_out_stem_cond_random_stem':
+            from main.msst.models.bs_roformer import BSRoformerStemsInStemsOutStemCondRandomStem
+            self.unet = BSRoformerStemsInStemsOutStemCondRandomStem(**kwargs)
+            print(f"Loaded MSST model: {model_type} (stems-in-stems-out with stem conditioning, random stem training)")
+        elif model_type == 'mel_band_roformer':
+            from main.msst.models.bs_roformer import MelBandRoformer
+            self.unet = MelBandRoformer(**kwargs)
+            print(f"Loaded MSST model: {model_type}")
+        elif model_type == 'bs_conformer':
+            from main.msst.models.bs_roformer import BSConformer
+            self.unet = BSConformer(**kwargs)
+            print(f"Loaded MSST model: {model_type}")
+        elif model_type == 'mel_band_conformer':
+            from main.msst.models.bs_roformer import MelBandConformer
+            self.unet = MelBandConformer(**kwargs)
+            print(f"Loaded MSST model: {model_type}")
+        elif model_type == 'bs_roformer_experimental':
+            from main.msst.models.bs_roformer.bs_roformer_experimental import BSRoformer
+            self.unet = BSRoformer(**kwargs)
+            print(f"Loaded MSST model: {model_type}")
+        elif model_type == 'mel_band_roformer_experimental':
+            from main.msst.models.bs_roformer.mel_band_roformer_experimental import MelBandRoformer
+            self.unet = MelBandRoformer(**kwargs)
+            print(f"Loaded MSST model: {model_type}")
 
         self.diffusion = Diffusion(
             net=self.unet,
             sigma_distribution=diffusion_sigma_distribution,
             sigma_data=diffusion_sigma_data,
             dynamic_threshold=diffusion_dynamic_threshold,
+            loss_type=loss_type,
+            bridge_sigma_max=bridge_sigma_max,
         )
 
     def forward(self, x: Tensor, **kwargs) -> Tensor:
@@ -237,6 +282,13 @@ class AudioDiffusionModel(Model1d):
 
     def sample(self, *args, **kwargs):
         return super().sample(*args, **{**get_default_sampling_kwargs(), **kwargs})
+    
+class AudioDiffusionModel_MSST(Model1d):
+    def __init__(self, **kwargs):
+        super().__init__(**kwargs)
+
+    def sample(self, *args, **kwargs):
+        return super().sample(*args, **kwargs)
 
 
 class AudioDiffusionUpsampler(DiffusionUpsampler1d):

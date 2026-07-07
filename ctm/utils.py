@@ -15,7 +15,7 @@ sys.path.append(current_dir)
 # sys.path.append(subdirectory)
 
 import numpy as np
-from networks import EDMPrecond_CTM, EDMPrecond_Audio_CTM
+from networks import EDMPrecond_CTM, EDMPrecond_Audio_CTM, EDMPrecond_MSST_CTM
 from resample import create_named_schedule_sampler
 from karras_diffusion import KarrasDenoiser
 
@@ -133,6 +133,32 @@ def create_model_and_diffusion_audio(args, feature_extractor=None, discriminator
                             arch='ddpmpp',
                             linear_probing=args.diffusion.linear_probing
                             )
+
+    diffusion = KarrasDenoiser(
+        args=args.diffusion, 
+        schedule_sampler=schedule_sampler,
+        diffusion_schedule_sampler=diffusion_schedule_sampler,
+        feature_extractor=feature_extractor,
+        discriminator_feature_extractor=discriminator_feature_extractor,
+    )
+
+    return model, diffusion
+
+
+def create_model_and_diffusion_audio_msst(args, feature_extractor=None, discriminator_feature_extractor=None, teacher=False):
+    schedule_sampler = create_named_schedule_sampler(args.diffusion, args.diffusion.schedule_sampler, args.diffusion.start_scales)
+    diffusion_schedule_sampler = create_named_schedule_sampler(args.diffusion, args.diffusion.diffusion_schedule_sampler, args.diffusion.start_scales)
+
+    model = EDMPrecond_MSST_CTM(
+        args.model,
+        use_fp16=args.diffusion.use_fp16,
+        sigma_min=args.diffusion.sigma_min,
+        sigma_max=args.diffusion.sigma_max,
+        sigma_data=args.diffusion.sigma_data,
+        teacher=teacher,
+        training_mode=args.diffusion.training_mode,
+        linear_probing=args.diffusion.linear_probing,
+    )
 
     diffusion = KarrasDenoiser(
         args=args.diffusion, 

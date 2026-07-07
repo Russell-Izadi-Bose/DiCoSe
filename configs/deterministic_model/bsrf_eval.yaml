@@ -1,0 +1,269 @@
+# @package _global_
+
+project_name: "Deterministic_model_MSST_bs_roformer"
+log_directory: "lightning_logs"
+mode: test # train | test | validate_all
+
+id:
+  version: "MSST_simple_MUSDB_TEST"
+  name: ""
+
+model:
+  _target_: train_audio_simple.Audio_MSST_Model_simple
+  learning_rate: 1.0 #1.0e-4
+  load_pretrained: #lightning_logs/Train_roformer/checkpoint_pretrained/model_bs_roformer_ep_17_sdr_9.6568.ckpt
+
+  # Optimizer configuration
+  optimizer: prodigy  # Options: adam, adamw, radam, rmsprop, prodigy, adamw8bit, sgd
+  optimizer_params:
+    # weight_decay: 0.01  # Optional: add weight decay for regularization
+    # betas: !!python/tuple [0.9, 0.999]  # Optional: custom betas for Adam-like optimizers
+    # eps: 1.0e-8  # Optional: epsilon for numerical stability
+
+  # Learning rate scheduler configuration
+  use_scheduler: False  # Set to true to enable ReduceLROnPlateau scheduler
+  scheduler_monitor: 'sdr_avg'  # Metric to monitor (e.g., 'valid_loss', 'msdm_si_sdr_avg', 'sdr_avg')
+  scheduler_mode: 'max'  # 'max' for metrics to maximize (SDR), 'min' for metrics to minimize (loss)
+  patience: 3
+  reduce_factor: 0.95
+
+  model_type: bs_roformer
+  dim: 384
+  depth: 8
+  stereo: true
+  num_stems: 4
+  time_transformer_depth: 1
+  freq_transformer_depth: 1
+  linear_transformer_depth: 0
+  freqs_per_bands: !!python/tuple
+    - 2
+    - 2
+    - 2
+    - 2
+    - 2
+    - 2
+    - 2
+    - 2
+    - 2
+    - 2
+    - 2
+    - 2
+    - 2
+    - 2
+    - 2
+    - 2
+    - 2
+    - 2
+    - 2
+    - 2
+    - 2
+    - 2
+    - 2
+    - 2
+    - 4
+    - 4
+    - 4
+    - 4
+    - 4
+    - 4
+    - 4
+    - 4
+    - 4
+    - 4
+    - 4
+    - 4
+    - 12
+    - 12
+    - 12
+    - 12
+    - 12
+    - 12
+    - 12
+    - 12
+    - 24
+    - 24
+    - 24
+    - 24
+    - 24
+    - 24
+    - 24
+    - 24
+    - 48
+    - 48
+    - 48
+    - 48
+    - 48
+    - 48
+    - 48
+    - 48
+    - 128
+    - 129
+  dim_head: 64
+  heads: 8
+  attn_dropout: 0.1
+  ff_dropout: 0.1
+  flash_attn: true
+  dim_freqs_in: 1025
+  stft_n_fft: 2048
+  stft_hop_length: 441
+  stft_win_length: 2048
+  stft_normalized: false
+  mask_estimator_depth: 2
+  multi_stft_resolution_loss_weight: 1.0
+  multi_stft_resolutions_window_sizes: !!python/tuple
+  - 4096
+  - 2048
+  - 1024
+  - 512
+  - 256
+  multi_stft_hop_size: 147
+  multi_stft_normalized: False
+  mlp_expansion_factor: 2
+  skip_connection: False # Enable skip connection between transformer blocks - can solve problem with gradients and probably faster training
+  # use_torch_checkpoint: true
+
+
+
+
+train_dataset:
+  _target_: main.msst.utils.dataset.MSSDataset
+  data_path: dataset/musdb18hq/train
+  metadata_path: dataset/musdb18hq/train_metadata.pkl
+  dataset_type: 1
+  config:
+    instruments:  ['drums', 'bass', "other", "vocals" ]
+    target_instrument: null
+    audio:
+      chunk_size: 485100
+      dim_f: 1024
+      dim_t: 801 # don't work (use in model)
+      hop_length: 441 # don't work (use in model)
+      n_fft: 2048
+      num_channels: 2
+      sample_rate: 44100
+      min_mean_abs: 0.000
+    augmentations:
+      enable: true # enable or disable all augmentations (to fast disable if needed)
+      loudness: true # randomly change loudness of each stem on the range (loudness_min; loudness_max)
+      loudness_min: 0.5
+      loudness_max: 1.5
+      mixup: true # mix several stems of same type with some probability (only works for dataset types: 1, 2, 3)
+      mixup_probs: !!python/tuple # 2 additional stems of the same type (1st with prob 0.2, 2nd with prob 0.02)
+        - 0.2
+        - 0.02
+      mixup_loudness_min: 0.5
+      mixup_loudness_max: 1.5
+
+      all:
+        channel_shuffle: 0.5 # Set 0 or lower to disable
+        random_inverse: 0.1 # inverse track (better lower probability)
+        random_polarity: 0.5 # polarity change (multiply waveform to -1)
+
+      vocals:
+          pitch_shift: 0.1
+          pitch_shift_min_semitones: -5
+          pitch_shift_max_semitones: 5
+          seven_band_parametric_eq: 0.1
+          seven_band_parametric_eq_min_gain_db: -9
+          seven_band_parametric_eq_max_gain_db: 9
+          tanh_distortion: 0.1
+          tanh_distortion_min: 0.1
+          tanh_distortion_max: 0.7
+      bass:
+        pitch_shift: 0.1
+        pitch_shift_min_semitones: -2
+        pitch_shift_max_semitones: 2
+        seven_band_parametric_eq: 0.1
+        seven_band_parametric_eq_min_gain_db: -3
+        seven_band_parametric_eq_max_gain_db: 6
+        tanh_distortion: 0.1
+        tanh_distortion_min: 0.1
+        tanh_distortion_max: 0.5
+      drums:
+        pitch_shift: 0.1
+        pitch_shift_min_semitones: -5
+        pitch_shift_max_semitones: 5
+        seven_band_parametric_eq: 0.1
+        seven_band_parametric_eq_min_gain_db: -9
+        seven_band_parametric_eq_max_gain_db: 9
+        tanh_distortion: 0.1
+        tanh_distortion_min: 0.1
+        tanh_distortion_max: 0.6
+      other:
+        pitch_shift: 0.1
+        pitch_shift_min_semitones: -4
+        pitch_shift_max_semitones: 4
+        gaussian_noise: 0.1
+        gaussian_noise_min_amplitude: 0.001
+        gaussian_noise_max_amplitude: 0.015
+        time_stretch: 0.1
+        time_stretch_min_rate: 0.8
+        time_stretch_max_rate: 1.25
+
+
+
+val_dataset:
+  _target_: main.data.MUSDB_Aug_Repitch_Tracks_Dataset_MSST
+  audio_files_dir: "dataset/musdb18hq/test" #_debug"
+  sr: 44100
+  channels: 2
+  min_duration: 12.0
+  max_duration: 640.0
+  aug_shift: 
+  sample_length: 485100
+  stems:   ['drums', 'bass', 'other', 'vocals']
+  metadata: "metadata"
+  normalize: False
+  augment: False
+      
+
+
+datamodule:
+  batch_size: 1
+  val_batch_size: 8
+  num_workers: 4
+  pin_memory: False
+
+
+
+audio_samples_logger:
+  _target_: train_audio_simple.ClassCondSeparateTrackSampleLogger_simple_MSST
+  num_items: 2
+  channels: 2
+  sampling_rate: 44100
+  length: 485100
+  stems:  ['drums', 'bass', 'other', 'vocals']
+  run_museval: true
+  # log_all: false
+
+
+
+callbacks:
+  rich_progress_bar:
+    _target_: pytorch_lightning.callbacks.RichProgressBar
+
+  model_summary:
+    _target_: pytorch_lightning.callbacks.RichModelSummary
+    max_depth: 1
+
+
+
+
+trainer:
+  accelerator: cuda
+  # accumulate_grad_batches: 4   # ← THIS
+  devices: [0, 1, 2]
+  precision: "16-mixed" # Precision used for tensors, default `32`
+  min_epochs: 0
+  max_epochs: 1200
+  enable_model_summary: False
+  # log_every_n_steps: 10 # Logs metrics every N batches
+  # check_val_every_n_epoch: 5
+  # val_check_interval: 1000  # Not needed - will validate at end of each epoch (every 1000 steps)
+  limit_val_batches: 
+  limit_train_batches: 
+  strategy: auto
+  num_sanity_val_steps: 0
+
+
+resume_from_checkpoint: lightning_logs/DiCoSe/Deterministic_model_MSST_bs_roformer/model.ckpt
