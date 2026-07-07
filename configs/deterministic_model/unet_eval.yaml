@@ -9,7 +9,7 @@ id:
   name: ""
 
 model:
-  _target_: train_audio_simple.Audio_DM_Model_simple
+  _target_: train_det.Audio_DM_Model_simple
   learning_rate: 1.e-4
   beta1: 0.9
   beta2: 0.99
@@ -70,7 +70,7 @@ datamodule:
 
 
 audio_samples_logger:
-  _target_: train_audio_simple.ClassCondSeparateTrackSampleLogger_simple
+  _target_: train_det.ClassCondSeparateTrackSampleLogger_simple
   num_items: 2
   channels: 1
   sampling_rate: 22050

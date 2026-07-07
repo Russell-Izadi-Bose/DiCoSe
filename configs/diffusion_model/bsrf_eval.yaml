@@ -132,7 +132,7 @@ model:
   pretrained_diffusion_checkpoint: lightning_logs/DiCoSe/Deterministic_model_MSST_bs_roformer/model.ckpt
 
   pre_trained_mixture_feature_extractor_model_config:
-    _target_: train_audio_simple.Audio_MSST_Model_simple
+    _target_: train_det.Audio_MSST_Model_simple
     learning_rate: 1.0e-5
     patience: 3
     reduce_factor: 0.95

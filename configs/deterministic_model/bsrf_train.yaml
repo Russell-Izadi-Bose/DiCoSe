@@ -9,7 +9,7 @@ id:
   name: ""
 
 model:
-  _target_: train_audio_simple.Audio_MSST_Model_simple
+  _target_: train_det.Audio_MSST_Model_simple
   learning_rate: 1.0 #1.0e-4
   load_pretrained: #lightning_logs/Train_roformer/checkpoint_pretrained/model_bs_roformer_ep_17_sdr_9.6568.ckpt
 
@@ -227,7 +227,7 @@ datamodule:
 
 
 audio_samples_logger:
-  _target_: train_audio_simple.ClassCondSeparateTrackSampleLogger_simple_MSST
+  _target_: train_det.ClassCondSeparateTrackSampleLogger_simple_MSST
   num_items: 2
   channels: 2
   sampling_rate: 44100

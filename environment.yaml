@@ -71,6 +71,7 @@ dependencies:
     - attrs==23.2.0
     - audiomentations==0.24.0
     - audioread==3.0.1
+    - av==13.0.0
     - beartype==0.14.1
     - blobfile==2.1.1
     - brotli==1.1.0

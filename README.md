@@ -80,22 +80,35 @@ wandb login
 
 #### Deterministic Model Training
 ```bash
-python train_audio_simple.py --cfg configs/deterministic_model/unet_train.yaml
+python train_det.py --cfg configs/deterministic_model/unet_train.yaml
 ```
 
 #### Diffusion Model Training
 ```bash
-python train_audio.py --cfg configs/diffusion_model/unet_train.yaml
+python train_diff.py --cfg configs/diffusion_model/unet_train.yaml
 ```
 
 #### Consistency Model Training
 ```bash
-python main_audio_ctm.py --cfg configs/consistency_model/unet_train.yaml
+python train_cd.py --cfg configs/consistency_model/unet_train.yaml
 ```
 
 ### BS-RoFormer Experiments (MUSDB18)
 
-Code coming soon!
+#### Deterministic Model Training
+```bash
+python train_det.py --cfg configs/deterministic_model/bsrf_train.yaml
+```
+
+#### Diffusion Model Training
+```bash
+python train_diff.py --cfg configs/diffusion_model/bsrf_train.yaml
+```
+
+#### Consistency Model Training
+```bash
+python train_cd.py --cfg configs/consistency_model/bsrf_train.yaml
+```
 
 ---
 
@@ -121,22 +134,35 @@ Each checkpoint lands at `lightning_logs/DiCoSe/<name>/model.ckpt`.
 
 #### Deterministic Model Evaluation
 ```bash
-python train_audio_simple.py --cfg configs/deterministic_model/unet_eval.yaml
+python train_det.py --cfg configs/deterministic_model/unet_eval.yaml
 ```
 
 #### Diffusion Model Evaluation
 ```bash
-python train_audio.py --cfg configs/diffusion_model/unet_eval.yaml
+python train_diff.py --cfg configs/diffusion_model/unet_eval.yaml
 ```
 
 #### Consistency Model Evaluation
 ```bash
-python main_audio_ctm.py --cfg configs/consistency_model/unet_eval.yaml
+python train_cd.py --cfg configs/consistency_model/unet_eval.yaml
 ```
 
 ### BS-RoFormer Experiments (MUSDB18)
 
-Code coming soon!
+#### Deterministic Model Evaluation
+```bash
+python train_det.py --cfg configs/deterministic_model/bsrf_eval.yaml
+```
+
+#### Diffusion Model Evaluation
+```bash
+python train_diff.py --cfg configs/diffusion_model/bsrf_eval.yaml
+```
+
+#### Consistency Model Evaluation
+```bash
+python train_cd.py --cfg configs/consistency_model/bsrf_eval.yaml
+```
 
 ---
 
